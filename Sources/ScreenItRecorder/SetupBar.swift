@@ -50,107 +50,111 @@ private final class BarPanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }
 
-/// QuickTime's dark bar: what to record on the left, one pop-up per option (icon + current value)
-/// in the middle, Record on the right.
+/// QuickTime's dark bar, in two rows: what to record and Record on top, one pop-up per option
+/// (icon + current value) below.
 private struct SetupBarView: View {
     @ObservedObject private var area = RecordArea.shared
     @ObservedObject private var rec = Recorder.shared
     @ObservedObject private var clicks = ClickHighlight.shared
 
     var body: some View {
-        HStack(spacing: 10) {
-            Button { AreaPicker.close() } label: {
-                Image(systemName: "xmark.circle.fill").font(.system(size: 20)).foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .keyboardShortcut(.cancelAction)
-            .help("Close (Esc)")
-
-            separator
-
-            chip("display", displayName, help: "Which display to record") {
-                Picker("Display", selection: displayBinding) {
-                    Text("All Displays").tag(String?.none)
-                    ForEach(RecordArea.displays(), id: \.uuid) { Text($0.name).tag(Optional($0.uuid)) }
+        VStack(spacing: 10) {
+            // What to record, and Record.
+            HStack(spacing: 10) {
+                Button { AreaPicker.close() } label: {
+                    Image(systemName: "xmark.circle.fill").font(.system(size: 20)).foregroundStyle(.secondary)
                 }
-                .pickerStyle(.inline)
-            }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)
+                .help("Close (Esc)")
 
-            Picker("Area", selection: presetBinding) {
-                ForEach(RecordArea.Preset.allCases.filter { $0 != .custom || area.custom != nil }) { p in
-                    Text(p == .custom ? "Selected" : p == .full ? "Full" : p == .left ? "Left" : "Right").tag(p)
+                separator
+
+                chip("display", displayName, help: "Which display to record") {
+                    Picker("Display", selection: displayBinding) {
+                        Text("All Displays").tag(String?.none)
+                        ForEach(RecordArea.displays(), id: \.uuid) { Text($0.name).tag(Optional($0.uuid)) }
+                    }
+                    .pickerStyle(.inline)
                 }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
-            .disabled(area.display == nil)
 
-            separator
-
-            chip(rec.micID == nil ? "mic.slash" : "mic", micName, help: "Microphone: records to mic.wav") {
-                Picker("Microphone", selection: $rec.micID) {
-                    Text("None").tag(String?.none)
-                    ForEach(rec.mics, id: \.uniqueID) { Text($0.localizedName).tag(Optional($0.uniqueID)) }
+                Picker("Area", selection: presetBinding) {
+                    ForEach(RecordArea.Preset.allCases.filter { $0 != .custom || area.custom != nil }) { p in
+                        Text(p == .custom ? "Selected" : p == .full ? "Full" : p == .left ? "Left" : "Right").tag(p)
+                    }
                 }
-                .pickerStyle(.inline)
-            }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                .disabled(area.display == nil)
 
-            chip(rec.appSoundApps.isEmpty ? "speaker.slash" : "speaker.wave.2", soundName,
-                 help: "App sound: each ticked app records to its own file") {
-                ForEach(rec.soundAppChoices, id: \.id) { Toggle($0.name, isOn: rec.soundApp($0.id)) }
-                Divider()
-                Button("Choose App…") { rec.chooseSoundApp() }
-                Button("Sound Settings…") { open(.sound) }
-            }
-
-            chip(rec.cameraID == nil ? "video.slash" : "video", cameraName, help: "Camera: records to camera.mov") {
-                Picker("Camera", selection: $rec.cameraID) {
-                    let cams = CameraRecorder.devices
-                    let labels = CameraRecorder.labels(for: cams)
-                    Text("None").tag(String?.none)
-                    ForEach(cams, id: \.uniqueID) { Text(labels[$0.uniqueID]!).tag(Optional($0.uniqueID)) }
+                Spacer(minLength: 24)
+                Button { AreaPicker.confirm() } label: {
+                    Label("Record", systemImage: "record.circle.fill")
+                        .labelStyle(.titleAndIcon)
+                        .font(.system(size: 13, weight: .semibold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
                 }
-                .pickerStyle(.inline)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .fixedSize()
+                .tint(Color(nsColor: ClickHighlight.red))
+                .keyboardShortcut(.defaultAction)
+                .help("Start recording (Enter or ⌃⌥⇧R)")
             }
-
-            chip("timer", rec.startCountdown == 0 ? "No countdown" : "\(rec.startCountdown) s",
-                 help: "Start countdown with sync tones") {
-                Picker("Countdown", selection: $rec.startCountdown) {
-                    ForEach(Countdown.choices, id: \.self) { Text($0 == 0 ? "Off" : "\($0) seconds").tag($0) }
+            Divider().opacity(0.5)
+            // How: one pop-up per option.
+            HStack(spacing: 8) {
+                chip(rec.micID == nil ? "mic.slash" : "mic", micName, help: "Microphone: records to mic.wav") {
+                    Picker("Microphone", selection: $rec.micID) {
+                        Text("None").tag(String?.none)
+                        ForEach(rec.mics, id: \.uniqueID) { Text($0.localizedName).tag(Optional($0.uniqueID)) }
+                    }
+                    .pickerStyle(.inline)
                 }
-                .pickerStyle(.inline)
-            }
 
-            chip("cursorarrow.click", clicks.mode == .off ? "No clicks" : "Clicks", help: "Highlight mouse clicks") {
-                Picker("Highlight Clicks", selection: $clicks.mode) {
-                    ForEach(ClickHighlight.Mode.allCases) { Text($0.label).tag($0) }
+                chip(rec.appSoundApps.isEmpty ? "speaker.slash" : "speaker.wave.2", soundName,
+                     help: "App sound: each ticked app records to its own file") {
+                    ForEach(rec.soundAppChoices, id: \.id) { Toggle($0.name, isOn: rec.soundApp($0.id)) }
+                    Divider()
+                    Button("Choose App…") { rec.chooseSoundApp() }
+                    Button("Sound Settings…") { open(.sound) }
                 }
-                .pickerStyle(.inline)
-            }
 
-            Button { open(.recording) } label: {
-                Image(systemName: "gearshape").font(.system(size: 15))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("Settings (saves to \(rec.folder.lastPathComponent))")
+                chip(rec.cameraID == nil ? "video.slash" : "video", cameraName, help: "Camera: records to camera.mov") {
+                    Picker("Camera", selection: $rec.cameraID) {
+                        let cams = CameraRecorder.devices
+                        let labels = CameraRecorder.labels(for: cams)
+                        Text("None").tag(String?.none)
+                        ForEach(cams, id: \.uniqueID) { Text(labels[$0.uniqueID]!).tag(Optional($0.uniqueID)) }
+                    }
+                    .pickerStyle(.inline)
+                }
 
-            separator
+                chip("timer", rec.startCountdown == 0 ? "No countdown" : "\(rec.startCountdown) s",
+                     help: "Start countdown with sync tones") {
+                    Picker("Countdown", selection: $rec.startCountdown) {
+                        ForEach(Countdown.choices, id: \.self) { Text($0 == 0 ? "Off" : "\($0) seconds").tag($0) }
+                    }
+                    .pickerStyle(.inline)
+                }
 
-            Button { AreaPicker.confirm() } label: {
-                Label("Record", systemImage: "record.circle.fill")
-                    .labelStyle(.titleAndIcon)
-                    .font(.system(size: 13, weight: .semibold))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
+                chip("cursorarrow.click", clicks.mode == .off ? "No clicks" : "Clicks", help: "Highlight mouse clicks") {
+                    Picker("Highlight Clicks", selection: $clicks.mode) {
+                        ForEach(ClickHighlight.Mode.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.inline)
+                }
+
+                Spacer(minLength: 12)
+                Button { open(.recording) } label: {
+                    Image(systemName: "gearshape").font(.system(size: 15))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Settings (saves to \(rec.folder.lastPathComponent))")
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .fixedSize()
-            .tint(Color(nsColor: ClickHighlight.red))
-            .keyboardShortcut(.defaultAction)
-            .help("Start recording (Enter or ⌃⌥⇧R)")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
