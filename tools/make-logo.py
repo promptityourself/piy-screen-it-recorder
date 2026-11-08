@@ -8,8 +8,8 @@ font and weight. Run again only when the PIY logo changes:
 
     uv run tools/make-logo.py
 
-Writes Resources/icon.svg (the tile, with macOS's corner radius) and Resources/menubar.svg
-(the one-colour face, for the menu bar). It first redraws PIY's own P and Y the same way and
+Writes Resources/icon.svg (the tile, with macOS's corner radius) and, for the menu bar,
+Resources/tile.svg (the tile as published) and Resources/face.svg (the face alone). It first redraws PIY's own P and Y the same way and
 stops if they do not match the published logo, so a changed font or logo cannot slip through.
 """
 import json
@@ -95,9 +95,11 @@ icon = sr.replace('rx="17"', 'rx="22.5"')
 assert icon != sr
 (OUT / "icon.svg").write_text(icon + "\n")
 
-# The menu bar: the face alone (no tile), cropped to it, in ink. A template image there.
+# The menu bar: the brand tile (PIY's corner radius) while idle; the face alone, on a tile
+# the app fills red, while recording. Both in the tile's 100×100 frame, so they line up.
+(OUT / "tile.svg").write_text(sr + "\n")
 face = re.search(r'<g transform="translate\(5 5\) scale\(\.9\)">.*</g></g>', sr).group(0)[: -len("</g>")]
-(OUT / "menubar.svg").write_text(
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="10 10 80 74" role="img" aria-label="Screen It Recorder">'
+(OUT / "face.svg").write_text(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Screen It Recorder">'
     f"<title>Screen It Recorder</title>{face}</svg>\n")
-print(f"wrote {OUT / 'icon.svg'} and {OUT / 'menubar.svg'}")
+print(f"wrote icon.svg, tile.svg and face.svg in {OUT}")

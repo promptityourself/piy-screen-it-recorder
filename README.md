@@ -69,7 +69,7 @@ SIGN_ID="Developer ID Application: <your name> (<team id>)" ./build.sh
 ```
 
 The logo is the [Prompt It Yourself logo](https://promptityourself.com/media/) with S and R in place
-of P and Y. `uv run tools/make-logo.py` draws it again into `Resources/icon.svg` and `Resources/menubar.svg`.
+of P and Y. `uv run tools/make-logo.py` draws it again into `Resources/`.
 
 Smoke test without the UI (records 5 s, then quits; add `--green` to record over the green screen, `--clicks` for a click ripple in the centre of each display):
 
