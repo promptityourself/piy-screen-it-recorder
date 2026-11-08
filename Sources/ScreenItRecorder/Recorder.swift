@@ -3,8 +3,8 @@ import AVFoundation
 import os
 import ScreenCaptureKit
 
-/// Records every display to its own .mov (HEVC, ~1440p, 30fps). Each file carries the
-/// same microphone track, so FCP's "Synchronize Clips" (or a clap) lines them up.
+/// Records every display to its own .mov (HEVC, ~1440p, 30fps) and the mic to its own mic.wav,
+/// which starts with the first screen file. The camera file carries the mic too.
 @MainActor
 final class Recorder: NSObject, ObservableObject {
     static let shared = Recorder()
@@ -43,6 +43,10 @@ final class Recorder: NSObject, ObservableObject {
         didSet { UserDefaults.standard.set(appSound, forKey: "appSound") }
     }
     nonisolated static let appSoundRate = 48_000
+    /// ⌃⌥⇧R and Start Recording open the setup bar first; off = they start at once.
+    @Published var setupBar: Bool {
+        didSet { UserDefaults.standard.set(setupBar, forKey: "setupBar") }
+    }
     private var countdown: Task<Void, Never>?
     @Published var hideWidgets: Bool {
         didSet { UserDefaults.standard.set(hideWidgets, forKey: "hideWidgets") }
@@ -81,6 +85,12 @@ final class Recorder: NSObject, ObservableObject {
     static let saveTimeout: Duration = .seconds(10)
     nonisolated static let log = Logger(subsystem: "com.mergodon.ScreenItRecorder", category: "recorder")
     private var writers: [ScreenWriter] = []  // same order as `streams`
+    /// The apps' sound, captured once for every screen file; nil when app sound is off.
+    private var soundStream: SCStream?
+    private var sound: AppSound?
+    /// Apps that play the mic back to the speakers or headphones. Their sound is never recorded,
+    /// or the app sound repeats your voice a moment late (MOTIV Mix: 157 ms, measured 2026-11-09).
+    static let micMonitors: Set<String> = ["com.shure.motivmix"]
     /// Streams that already stopped (Stop in the macOS menu bar, an error). Stopping one again
     /// took ~35 s to return (2026-10-11), so stop() skips them.
     private var stoppedStreams: Set<ObjectIdentifier> = []
@@ -108,6 +118,7 @@ final class Recorder: NSObject, ObservableObject {
         hideWidgets = d.object(forKey: "hideWidgets") as? Bool ?? true
         startCountdown = d.object(forKey: "startCountdown") as? Int ?? 3
         appSound = d.object(forKey: "appSound") as? Bool ?? true
+        setupBar = d.object(forKey: "setupBar") as? Bool ?? true
         micID = d.string(forKey: "micID").map { $0.isEmpty ? nil : $0 }
             ?? AVCaptureDevice.default(for: .audio)?.uniqueID
         cameraID = d.string(forKey: "cameraID")  // off unless chosen
@@ -226,10 +237,15 @@ final class Recorder: NSObject, ObservableObject {
                 }
             }
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            for (i, display) in displays {
+            for (n, (i, display)) in displays.enumerated() {
                 let unit = area.display == nil ? nil : area.unitRect
+                // The mic is captured once, on the first stream, into its own file.
+                let mic = n == 0 ? try micWriter(url: dir.appending(path: "mic.wav")) : nil
                 try makeStream(display: display, area: unit, excluding: hidden.count == overlayIDs.count ? hidden : [],
-                               url: dir.appending(path: "screen\(i).mov"))
+                               mic: mic, url: dir.appending(path: "screen\(i).mov"))
+            }
+            if appSound, let first = displays.first?.element {
+                try makeSoundStream(display: first, content: content)
             }
             if let camera {
                 status = "Starting camera…"
@@ -243,7 +259,8 @@ final class Recorder: NSObject, ObservableObject {
                     }
                 }
             }
-            for stream in streams {
+            // The sound first, so it is there from the first frame.
+            for stream in [soundStream].compactMap({ $0 }) + streams {
                 try await stream.startCapture()
                 started.append(stream)
             }
@@ -274,6 +291,16 @@ final class Recorder: NSObject, ObservableObject {
         }
     }
 
+    /// ⌃⌥⇧R and the menu's Start/Stop: stop a recording; else start the one the open setup bar
+    /// shows; else open the setup bar (or start at once when it is turned off).
+    func userToggle() async {
+        if isRecording { return await stop() }
+        if AreaPicker.isOpen, AreaPicker.mode == .setup { return AreaPicker.confirm() }
+        guard setupBar else { return await start() }
+        AreaPicker.close()
+        AreaPicker.show(.setup)
+    }
+
     func stop() async {
         guard isRecording, !busy else { return }
         busy = true
@@ -282,7 +309,8 @@ final class Recorder: NSObject, ObservableObject {
         countdown = nil
         status = "Saving…"
         camera?.stop()
-        for stream in streams where !stoppedStreams.contains(ObjectIdentifier(stream)) {
+        // The sound last, so it runs to the last frame.
+        for stream in streams + [soundStream].compactMap({ $0 }) where !stoppedStreams.contains(ObjectIdentifier(stream)) {
             try? await stream.stopCapture()
         }
         for writer in writers {
@@ -316,19 +344,33 @@ final class Recorder: NSObject, ObservableObject {
 
     /// `area`: the part of the display to record, as fractions of it (origin top left); nil = all of it.
     /// `excluding`: our own overlay windows, seen on screen but never recorded.
-    private func makeStream(display: SCDisplay, area: CGRect?, excluding: [SCWindow], url: URL) throws {
+    /// File pixels per display point. Native = every physical pixel (5120×2880 on a Studio
+    /// Display); 1440p = 2560 wide. A crop keeps the density of the whole display: half a display
+    /// is half as wide.
+    func pixelsPerPoint(width: Double, scale: Double) -> Double {
+        let native = (width * scale).rounded()
+        return (resolution == .native ? native : min(Double(Self.targetWidth), native)) / width
+    }
+
+    /// A length in the file, even (the encoders want even sizes).
+    static func pixels(_ points: CGFloat, _ perPoint: Double) -> Int { Int((points * perPoint).rounded()) & ~1 }
+
+    private func micWriter(url: URL) throws -> MicWriter? {
+        guard let device = micID.flatMap({ AVCaptureDevice(uniqueID: $0) }) else { return nil }
+        return try MicWriter(url: url, device: device) { error in Task { @MainActor in self.fail(error) } }
+    }
+
+    /// `mic`: this stream also captures the mic, into that file.
+    private func makeStream(display: SCDisplay, area: CGRect?, excluding: [SCWindow], mic: MicWriter?,
+                            url: URL) throws {
         let crop = area.map { RecordArea.scale($0, to: CGSize(width: display.width, height: display.height)).integral }
         let filter = SCContentFilter(display: display, excludingWindows: excluding)
         let cfg = SCStreamConfiguration()
-        // Native = every physical pixel (5120×2880 on a Studio Display); 1440p = 2560 wide.
-        let native = Int((Double(display.width) * Double(filter.pointPixelScale)).rounded())
-        let fullWidth = resolution == .native ? native : min(Self.targetWidth, native)
-        // A crop keeps the pixel density of the whole display: half a display is half as wide.
-        let perPoint = Double(fullWidth) / Double(display.width)
+        let perPoint = pixelsPerPoint(width: Double(display.width), scale: Double(filter.pointPixelScale))
         let source = crop ?? CGRect(x: 0, y: 0, width: display.width, height: display.height)
         if let crop { cfg.sourceRect = crop }
-        cfg.width = Int((source.width * perPoint).rounded()) & ~1
-        cfg.height = Int((source.height * perPoint).rounded()) & ~1
+        cfg.width = Self.pixels(source.width, perPoint)
+        cfg.height = Self.pixels(source.height, perPoint)
         cfg.minimumFrameInterval = CMTime(value: 1, timescale: Self.fps)
         cfg.showsCursor = true
         // Capture in sRGB, not the display's P3, so pixels match the file's BT.709 tag
@@ -338,18 +380,9 @@ final class Recorder: NSObject, ObservableObject {
         cfg.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
         cfg.queueDepth = 8
         cfg.streamName = "Screen It Recorder"
-        let mic = micID.flatMap { AVCaptureDevice(uniqueID: $0) }
-        if let micID {
+        if mic != nil, let micID {
             cfg.captureMicrophone = true
             cfg.microphoneCaptureDeviceID = micID
-        }
-        if appSound {
-            cfg.capturesAudio = true
-            // Our own count beeps too: digital and at full level here, an exact marker in every
-            // screen file (the mic hears them only faintly from the speakers).
-            cfg.excludesCurrentProcessAudio = false
-            cfg.sampleRate = Self.appSoundRate
-            cfg.channelCount = 2
         }
 
         let writer = try ScreenWriter(url: url, width: cfg.width, height: cfg.height, codec: codec,
@@ -359,9 +392,31 @@ final class Recorder: NSObject, ObservableObject {
         let stream = SCStream(filter: filter, configuration: cfg, delegate: self)
         try stream.addStreamOutput(writer, type: .screen, sampleHandlerQueue: writer.queue)
         if mic != nil { try stream.addStreamOutput(writer, type: .microphone, sampleHandlerQueue: writer.queue) }
-        if appSound { try stream.addStreamOutput(writer, type: .audio, sampleHandlerQueue: writer.queue) }
         streams.append(stream)
         writers.append(writer)
+    }
+
+    /// One audio-only stream for the apps' sound, handed to every screen writer. Its own filter
+    /// leaves out the mic monitors' sound, which the screen streams' filters (they leave out our
+    /// overlay windows) cannot do as well.
+    private func makeSoundStream(display: SCDisplay, content: SCShareableContent) throws {
+        let monitors = content.applications.filter { Self.micMonitors.contains($0.bundleIdentifier) }
+        let filter = SCContentFilter(display: display, excludingApplications: monitors, exceptingWindows: [])
+        let cfg = SCStreamConfiguration()
+        cfg.width = 2
+        cfg.height = 2
+        cfg.minimumFrameInterval = CMTime(value: 1, timescale: 1)
+        cfg.capturesAudio = true
+        // Our own count beeps too: digital and at full level here, an exact marker in every
+        // screen file (mic.wav hears them only faintly from the speakers).
+        cfg.excludesCurrentProcessAudio = false
+        cfg.sampleRate = Self.appSoundRate
+        cfg.channelCount = 2
+        let sound = AppSound(writers: writers)
+        let stream = SCStream(filter: filter, configuration: cfg, delegate: self)
+        try stream.addStreamOutput(sound, type: .audio, sampleHandlerQueue: sound.queue)
+        self.sound = sound
+        soundStream = stream
     }
 
     private func teardown() async {
@@ -369,6 +424,8 @@ final class Recorder: NSObject, ObservableObject {
         watchdog?.cancel()
         watchdog = nil
         writers.removeAll()
+        soundStream = nil
+        sound = nil
         stoppedStreams.removeAll()
         cameraFile = nil
         streams.removeAll()
@@ -439,6 +496,18 @@ extension Recorder: SCStreamDelegate {
             if code != SCStreamError.Code.userStopped.rawValue { self.fail(error) }
             await self.stop()
         }
+    }
+}
+
+/// Hands the sound stream's samples to every screen writer.
+private final class AppSound: NSObject, SCStreamOutput, @unchecked Sendable {
+    let queue = DispatchQueue(label: "AppSound", qos: .userInteractive)
+    private let writers: [ScreenWriter]
+    init(writers: [ScreenWriter]) { self.writers = writers }
+
+    func stream(_ stream: SCStream, didOutputSampleBuffer buffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        guard type == .audio, buffer.isValid else { return }
+        writers.forEach { $0.appendAppSound(buffer) }
     }
 }
 

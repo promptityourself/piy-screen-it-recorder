@@ -25,10 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // ⌃⌥R is FCP's Retime → Custom Speed; ⌃⌥⇧R is free there.
         HotKey.register(keyCode: kVK_ANSI_R, modifiers: controlKey | optionKey | shiftKey) {
-            Task { @MainActor in
-                let rec = Recorder.shared
-                rec.isRecording ? await rec.stop() : await rec.start()
-            }
+            Task { @MainActor in await Recorder.shared.userToggle() }
         }
 
         // ⌃⌥P / ⌃⌥⇧P are free in FCP's Default.commandset (checked 2026-10-11).
@@ -40,7 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // `--settings [recording|colour|shortcuts|permissions]`, `--about`, `--playback`,
-        // `--select-area`: open that window.
+        // `--select-area`, `--setup` (the setup bar): open that window.
         let launch = CommandLine.arguments
         if let i = launch.firstIndex(of: "--settings") {
             let tabs: [String: SettingsWindow.Tab] = [
@@ -51,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if launch.contains("--about") { MainActor.assumeIsolated { About.show() } }
         if launch.contains("--select-area") { MainActor.assumeIsolated { AreaPicker.show() } }
+        if launch.contains("--setup") { MainActor.assumeIsolated { AreaPicker.show(.setup) } }
         if CommandLine.arguments.contains("--playback") { MainActor.assumeIsolated { PlaybackPanel.show() } }
 
         // `--test <seconds> [--green] [--clicks]`: record (optionally over green, with a click ripple
@@ -157,8 +155,8 @@ struct MenuView: View {
         if !Permission.allGranted {
             Button("⚠︎ Permissions Needed…") { SettingsWindow.show(.permissions) }
         }
-        Button(rec.isRecording ? "Stop Recording (⌃⌥⇧R)" : "Start Recording (⌃⌥⇧R)") {
-            Task { rec.isRecording ? await rec.stop() : await rec.start() }
+        Button(rec.isRecording ? "Stop Recording (⌃⌥⇧R)" : rec.setupBar ? "Start Recording… (⌃⌥⇧R)" : "Start Recording (⌃⌥⇧R)") {
+            Task { await rec.userToggle() }
         }
         AreaMenu().disabled(rec.isRecording)
         Button(green.isOn ? "\(green.shade.family) Screen Off (⌃⌥G / Esc)" : "\(green.shade.family) Screen On (⌃⌥G)") {

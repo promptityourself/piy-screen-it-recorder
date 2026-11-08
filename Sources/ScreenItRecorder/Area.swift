@@ -126,9 +126,17 @@ final class RecordArea: ObservableObject {
 /// half) if one is chosen. Drag inside it to move it, drag an edge or corner to resize it, or drag
 /// anywhere else for a new one, on any display. Enter, a double-click or Use This Area takes it;
 /// Esc cancels.
+///
+/// Setup mode (⌃⌥⇧R, Start Recording): the same cover plus the setup bar (SetupBar). There each
+/// change applies at once, so the bar always shows the truth, and Enter / Record starts recording.
 @MainActor
 enum AreaPicker {
+    enum Mode { case select, setup }
+    private(set) static var mode = Mode.select
     private static var views: [PickerView] = []
+    /// Under pop-up menus (level 101), so the setup bar's menus open above the cover; above the
+    /// Dock and the menu bar.
+    static let level = NSWindow.Level.statusBar
     /// Smaller than this (points) is a click, not an area.
     static let minSide: CGFloat = 64
 
@@ -139,20 +147,15 @@ enum AreaPicker {
 
     static var isOpen: Bool { !views.isEmpty }
 
-    static func show() {
+    static func show(_ mode: Mode = .select) {
         guard !isOpen, !Recorder.shared.isRecording else { return }
+        self.mode = mode
         GreenScreen.shared.hide()
         Playback.shared.stop()
-        let area = RecordArea.shared
-        selection = nil
-        if let uuid = area.display, let unit = area.unitRect,
-           let screen = NSScreen.screens.first(where: { RecordArea.uuid($0) == uuid }) {
-            let r = RecordArea.scale(unit, to: screen.frame.size)
-            selection = (screen, CGRect(x: r.minX, y: screen.frame.height - r.maxY, width: r.width, height: r.height).integral)
-        }
+        reload()
         for screen in NSScreen.screens {
             let w = PickerWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
-            w.level = .screenSaver
+            w.level = level
             w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
             w.isOpaque = false
             w.backgroundColor = .clear
@@ -165,20 +168,48 @@ enum AreaPicker {
             views.append(view)
         }
         NSApp.activate()
-        let key = selection?.screen ?? NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
-        (views.first { $0.screen == key } ?? views.first)?.window?.makeKey()
+        let mouse = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
+        if mode == .setup {
+            SetupBar.show(on: mouse ?? NSScreen.screens[0])
+        } else {
+            (views.first { $0.screen == selection?.screen ?? mouse } ?? views.first)?.window?.makeKey()
+        }
+    }
+
+    /// The selection from the saved area: a dragged area, a half, or a whole chosen display;
+    /// none for all displays.
+    static func reload() {
+        let area = RecordArea.shared
+        guard let uuid = area.display, let screen = NSScreen.screens.first(where: { RecordArea.uuid($0) == uuid }) else {
+            selection = nil
+            return
+        }
+        let r = RecordArea.scale(area.unitRect ?? CGRect(x: 0, y: 0, width: 1, height: 1), to: screen.frame.size)
+        selection = (screen, CGRect(x: r.minX, y: screen.frame.height - r.maxY, width: r.width, height: r.height).integral)
     }
 
     static func close() {
+        SetupBar.hide()
         views.forEach { $0.window?.orderOut(nil) }
         views.removeAll()
         selection = nil
     }
 
-    /// Take the selection as the recording area.
+    /// Select mode: take the selection as the recording area and close. Setup mode: start recording.
     static func confirm() {
-        guard let (screen, rect) = selection, let uuid = RecordArea.uuid(screen) else { return }
+        if mode == .setup {
+            close()
+            Task { await Recorder.shared.start() }
+            return
+        }
+        guard selection != nil else { return }
+        apply()
         close()
+    }
+
+    /// Save the selection as the recording area (a dragged area on its display).
+    fileprivate static func apply() {
+        guard let (screen, rect) = selection, let uuid = RecordArea.uuid(screen) else { return }
         let size = screen.frame.size
         let area = RecordArea.shared
         area.custom = CGRect(x: rect.minX / size.width, y: (size.height - rect.maxY) / size.height,
@@ -209,6 +240,7 @@ private final class PickerView: NSView {
     }
     private var drag: Drag?
     private var before: (screen: NSScreen, rect: CGRect)?  // restored when a new drag is only a click
+    private var rectAtDown: CGRect?  // to tell a real change from a click
     private static let grab: CGFloat = 10  // how near an edge counts as on it, in points
 
     init(screen: NSScreen) {
@@ -246,6 +278,7 @@ private final class PickerView: NSView {
     override func mouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
         window?.makeKey()
+        rectAtDown = AreaPicker.selection?.rect
         if let r = mine {
             if let b = buttonRect(for: r), b.contains(p) { AreaPicker.confirm(); return }
             let e = edges(at: p, of: r)
@@ -293,12 +326,17 @@ private final class PickerView: NSView {
         if case .new = drag, let r = mine, r.width < AreaPicker.minSide || r.height < AreaPicker.minSide {
             AreaPicker.selection = before  // a click, or too small: keep what was there
         }
+        // Setup mode applies a real change at once (the bar shows it); select mode waits for Enter.
+        if drag != nil, AreaPicker.mode == .setup, let sel = AreaPicker.selection, sel.screen == screen, sel.rect != rectAtDown {
+            AreaPicker.apply()
+        }
         drag = nil
         window?.invalidateCursorRects(for: self)
     }
 
     /// "Use This Area" under the area, or above it near the bottom of the display.
     private func buttonRect(for r: CGRect) -> CGRect? {
+        guard AreaPicker.mode == .select else { return nil }  // setup mode: the bar's Record button
         let size = (Self.button as NSString).size(withAttributes: Self.attrs)
         let w = size.width + 24, h = size.height + 12
         var y = r.minY - h - 12
@@ -314,10 +352,19 @@ private final class PickerView: NSView {
     ]
 
     override func draw(_ dirty: NSRect) {
+        let setup = AreaPicker.mode == .setup
+        if setup, AreaPicker.selection == nil {
+            // All displays: nothing dimmed, every display records whole.
+            label("Records this whole display · drag for an area instead", at: NSPoint(x: bounds.midX, y: bounds.maxY - 60), size: 16)
+            NSColor.black.withAlphaComponent(0.01).setFill()  // still takes the drag (alpha 0 passes clicks through)
+            bounds.fill()
+            return
+        }
         NSColor.black.withAlphaComponent(0.45).setFill()
         bounds.fill()
         guard let r = mine else {
             label(AreaPicker.selection == nil ? "Drag the area to record. Esc cancels."
+                  : setup ? "Not recorded · drag here for an area on this display"
                   : "Drag here for a new area on this display.", at: NSPoint(x: bounds.midX, y: bounds.midY))
             return
         }
@@ -337,8 +384,10 @@ private final class PickerView: NSView {
                 NSBezierPath(rect: CGRect(x: x - 5, y: y - 5, width: 10, height: 10)).fill()
             }
         }
-        let px = screen.backingScaleFactor
-        label("\(Int(r.width * px)) × \(Int(r.height * px)) px · drag to move or resize · Esc cancels",
+        // The size of the file, as Recorder will write it.
+        let px = Recorder.shared.pixelsPerPoint(width: screen.frame.width, scale: screen.backingScaleFactor)
+        label("\(Recorder.pixels(r.width, px)) × \(Recorder.pixels(r.height, px)) px · drag to move or resize"
+              + (setup ? "" : " · Esc cancels"),
               at: NSPoint(x: r.midX, y: r.maxY + 30), size: 16)
         if let b = buttonRect(for: r) {
             ClickHighlight.red.setFill()

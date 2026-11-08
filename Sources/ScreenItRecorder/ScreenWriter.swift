@@ -1,4 +1,5 @@
 import AVFoundation
+import os
 import ScreenCaptureKit
 
 /// Recording quality. SCRecordingOutput has no quality setting at all (it wrote ~2.8 Mbit/s HEVC
@@ -52,15 +53,17 @@ enum Resolution: String, CaseIterable, Identifiable {
     var label: String { self == .p1440 ? "1440p" : "Native (full display resolution)" }
 }
 
-/// Writes one display's frames plus the mic to a .mov. Sample callbacks run on `queue`.
+/// Writes one display's frames (and the apps' sound) to a .mov. The mic never goes in a screen
+/// file: the first screen's stream hands it to a MicWriter, its own file. Sample callbacks run on `queue`.
 /// `@unchecked Sendable`: its mutable state is touched only on `queue`.
 final class ScreenWriter: NSObject, SCStreamOutput, @unchecked Sendable {
     let url: URL
     let queue = DispatchQueue(label: "ScreenWriter", qos: .userInteractive)
     private let writer: AVAssetWriter
     private let video: AVAssetWriterInput
-    private let audio: AVAssetWriterInput?
-    /// The apps' sound (ScreenCaptureKit's system audio), a second track after the mic's.
+    /// The mic's own file; on the first screen's writer only, which also sets its start.
+    private let mic: MicWriter?
+    /// The apps' sound (ScreenCaptureKit's system audio), the file's only audio track.
     private let appAudio: AVAssetWriterInput?
     private var startTime: CMTime?
     /// The last complete frame. ScreenCaptureKit sends a new image only when the screen changes,
@@ -71,7 +74,8 @@ final class ScreenWriter: NSObject, SCStreamOutput, @unchecked Sendable {
     private var latestTime = CMTime.negativeInfinity  // the newest time any sample carried
     private let frameInterval = CMTime(value: 1, timescale: Recorder.fps)
     private var finishing = false
-    private var lastSample = ContinuousClock.now
+    /// Read from the main actor by the watchdog, so behind a lock and not on `queue`.
+    private let lastSample = OSAllocatedUnfairLock(initialState: ContinuousClock.now)
     private var reportedFailure = false
     private let onError: (Error) -> Void
 
@@ -80,7 +84,7 @@ final class ScreenWriter: NSObject, SCStreamOutput, @unchecked Sendable {
     static let areaKey = "com.promptityourself.screen-it-recorder.area"
     static let areaID = AVMetadataItem.identifier(forKey: areaKey, keySpace: .quickTimeMetadata)!
 
-    init(url: URL, width: Int, height: Int, codec: Codec, quality: Quality, mic: AVCaptureDevice?,
+    init(url: URL, width: Int, height: Int, codec: Codec, quality: Quality, mic: MicWriter?,
          appSound: Bool, area: CGRect?, onError: @escaping (Error) -> Void) throws {
         self.url = url
         self.onError = onError
@@ -119,22 +123,7 @@ final class ScreenWriter: NSObject, SCStreamOutput, @unchecked Sendable {
         guard writer.canAdd(video) else { throw RecError("Cannot write \(codec.label) video") }
         writer.add(video)
 
-        if let mic {
-            let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(mic.activeFormat.formatDescription)?.pointee
-            let input = AVAssetWriterInput(mediaType: .audio, outputSettings: [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: asbd.map { $0.mSampleRate } ?? 48_000,
-                AVNumberOfChannelsKey: min(2, max(1, Int(asbd?.mChannelsPerFrame ?? 1))),
-                AVEncoderBitRateKey: 192_000,
-            ])
-            input.expectsMediaDataInRealTime = true
-            input.metadata = [Self.trackName("Microphone")]
-            guard writer.canAdd(input) else { throw RecError("Cannot write the microphone audio") }
-            writer.add(input)
-            audio = input
-        } else {
-            audio = nil
-        }
+        self.mic = mic
         if appSound {
             let input = AVAssetWriterInput(mediaType: .audio, outputSettings: [
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
@@ -161,10 +150,10 @@ final class ScreenWriter: NSObject, SCStreamOutput, @unchecked Sendable {
     }
 
     /// Seconds since the stream last delivered anything (a frame, an idle frame, or audio).
-    var silence: Duration { queue.sync { ContinuousClock.now - lastSample } }
+    var silence: Duration { ContinuousClock.now - lastSample.withLock { $0 } }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer buffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        lastSample = .now
+        lastSample.withLock { $0 = .now }
         guard !finishing, buffer.isValid else { return }
         let pts = buffer.presentationTimeStamp
         if pts.isValid, pts > latestTime { latestTime = pts }
@@ -190,15 +179,20 @@ final class ScreenWriter: NSObject, SCStreamOutput, @unchecked Sendable {
                 lastFrameTime = pts
             }
         case .microphone:
-            guard let audio, let startTime, buffer.presentationTimeStamp >= startTime,
-                  audio.isReadyForMoreMediaData else { return }
-            if !audio.append(buffer) { report() }
-        case .audio:
-            guard let appAudio, let startTime, buffer.presentationTimeStamp >= startTime,
-                  appAudio.isReadyForMoreMediaData else { return }
-            if !appAudio.append(buffer) { report() }
+            guard let startTime else { return }
+            mic?.append(buffer, from: startTime)
         default:
             break
+        }
+    }
+
+    /// The apps' sound, from Recorder's one sound stream (shared by every screen file).
+    func appendAppSound(_ buffer: CMSampleBuffer) {
+        nonisolated(unsafe) let buffer = buffer
+        queue.async { [self] in
+            guard !finishing, let appAudio, let startTime, buffer.presentationTimeStamp >= startTime,
+                  appAudio.isReadyForMoreMediaData else { return }
+            if !appAudio.append(buffer) { report() }
         }
     }
 
@@ -232,18 +226,81 @@ final class ScreenWriter: NSObject, SCStreamOutput, @unchecked Sendable {
             throw RecError("\(url.lastPathComponent) got no frames from the display.")
         }
         video.markAsFinished()
-        audio?.markAsFinished()
         appAudio?.markAsFinished()
         await writer.finishWriting()
         if writer.status != .completed {
             throw writer.error ?? RecError("\(url.lastPathComponent) did not save.")
         }
+        try await mic?.finish()
     }
 
     /// A failed writer (for example a full disk) fails every later append: report it once.
     private func report() {
         guard !reportedFailure else { return }
         reportedFailure = true
+        onError(writer.error ?? RecError("\(url.lastPathComponent) stopped saving."))
+    }
+}
+
+/// The mic on its own, as uncompressed 24-bit WAV: the cleanest source for the edit, and never
+/// mixed into a screen file (the screen files had it too, and with the app sound that was an echo).
+/// Time 0 is the first screen file's first frame, so it lines up with that file as it is.
+/// Fed from that screen's ScreenWriter.queue only.
+final class MicWriter: @unchecked Sendable {
+    let url: URL
+    private let writer: AVAssetWriter
+    private let input: AVAssetWriterInput
+    private var started = false
+    private var failed = false
+    private let onError: (Error) -> Void
+
+    init(url: URL, device: AVCaptureDevice, onError: @escaping (Error) -> Void) throws {
+        self.url = url
+        self.onError = onError
+        let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(device.activeFormat.formatDescription)?.pointee
+        writer = try AVAssetWriter(outputURL: url, fileType: .wav)
+        input = AVAssetWriterInput(mediaType: .audio, outputSettings: [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: asbd.map { $0.mSampleRate } ?? 48_000,
+            AVNumberOfChannelsKey: min(2, max(1, Int(asbd?.mChannelsPerFrame ?? 1))),
+            AVLinearPCMBitDepthKey: 24,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
+        ])
+        input.expectsMediaDataInRealTime = true
+        guard writer.canAdd(input) else { throw RecError("Cannot write the microphone audio") }
+        writer.add(input)
+    }
+
+    /// `start`: the first screen frame's time; earlier mic samples are dropped.
+    func append(_ buffer: CMSampleBuffer, from start: CMTime) {
+        guard !failed, buffer.presentationTimeStamp >= start else { return }
+        if !started {
+            guard writer.startWriting() else { return report() }
+            writer.startSession(atSourceTime: start)
+            started = true
+        }
+        if input.isReadyForMoreMediaData, !input.append(buffer) { report() }
+    }
+
+    /// Call after the screen writer that feeds it finished.
+    func finish() async throws {
+        guard started else {
+            writer.cancelWriting()
+            try? FileManager.default.removeItem(at: url)
+            throw RecError("\(url.lastPathComponent) got no sound from the microphone.")
+        }
+        input.markAsFinished()
+        await writer.finishWriting()
+        if writer.status != .completed {
+            throw writer.error ?? RecError("\(url.lastPathComponent) did not save.")
+        }
+    }
+
+    private func report() {
+        guard !failed else { return }
+        failed = true
         onError(writer.error ?? RecError("\(url.lastPathComponent) stopped saving."))
     }
 }

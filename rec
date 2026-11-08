@@ -1,6 +1,8 @@
 #!/usr/bin/env zsh
-# Record both displays + the mic into two FCP-ready .mov files (one per screen).
-# Each file carries the same audio track, so a clap lines them up in FCP.
+# Record both displays into two FCP-ready .mov files (one per screen) and the mic into its own
+# file, as the app does: the mic never goes in a screen file. One ffmpeg run, so all three start
+# together. The mic is AAC (mic.m4a), not the app's WAV: with a screen input, ffmpeg 9's
+# avfoundation kept only ~1 s of any uncompressed or lossless mic output (WAV, FLAC, PCM .mov).
 # Stop with Ctrl-C (or q) — ffmpeg then finalises the files cleanly.
 set -euo pipefail
 
@@ -28,12 +30,12 @@ args+=(-thread_queue_size 1024 -f avfoundation -i "none:${MIC}")
 audio_idx=${#SCREENS[@]}
 for i in {1..${#SCREENS[@]}}; do
   n=$((i - 1))
-  args+=(-map "${n}:v" -map "${audio_idx}:a"
+  args+=(-map "${n}:v"
     -vf "scale=${SIZE}:flags=bicubic"
     -c:v hevc_videotoolbox -b:v "$BITRATE" -tag:v hvc1 -r "$FPS"
-    -c:a aac -b:a 192k
     "$OUT/screen$n.mov")
 done
+args+=(-map "${audio_idx}:a" -c:a aac -b:a 256k "$OUT/mic.m4a")
 
 # Hide desktop widgets while recording; put them back the way they were on exit.
 wcmd="${0:A:h}/widgets"

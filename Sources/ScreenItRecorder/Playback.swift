@@ -41,7 +41,7 @@ final class Playback: ObservableObject {
         didSet { UserDefaults.standard.set(lastSecondBeeps, forKey: "playLastSeconds") }
     }
     @Published var atEnd: AtEnd { didSet { UserDefaults.standard.set(atEnd.rawValue, forKey: "playAtEnd") } }
-    /// Off by default: a recording's own track is the mic from the first take.
+    /// Off by default: a recording's own track is the app sound of the first take, beeps included.
     @Published var videoSound: Bool {
         didSet {
             UserDefaults.standard.set(videoSound, forKey: "playVideoSound")

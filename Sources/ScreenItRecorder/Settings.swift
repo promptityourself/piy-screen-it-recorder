@@ -79,10 +79,11 @@ private struct RecordingTab: View {
                         }
                     }
                 }
+                Toggle("Show the setup bar before recording", isOn: $rec.setupBar)
                 Picker("Start countdown", selection: $rec.startCountdown) {
                     ForEach(Countdown.choices, id: \.self) { Text($0 == 0 ? "Off" : "\($0) seconds").tag($0) }
                 }
-                Toggle("Record app sound as a second track", isOn: $rec.appSound)
+                Toggle("Record app sound in the screen files", isOn: $rec.appSound)
                 Toggle("Hide desktop widgets while recording", isOn: $rec.hideWidgets)
                 LabeledContent("Saves to") {
                     VStack(alignment: .trailing) {
@@ -236,6 +237,7 @@ private struct ShortcutsTab: View {
         Form {
             Section("Recording") {
                 LabeledContent("Start / stop recording", value: "⌃⌥⇧R")
+                LabeledContent("With the setup bar", value: "⌃⌥⇧R opens it, Enter or ⌃⌥⇧R starts, Esc closes")
             }
             Section("Screen colour") {
                 LabeledContent("Green / blue screen on / off", value: "⌃⌥G  (Esc also turns it off)")
@@ -255,8 +257,8 @@ enum About {
     static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
     static let repo = URL(string: "https://github.com/promptityourself/piy-screen-it-recorder")!
     static let site = URL(string: "https://promptityourself.com/projects/screen-it-recorder/")!
-    static let blurb = "Records every screen, and a camera if you want one, to separate files "
-        + "with the same mic track, so Final Cut Pro can sync them."
+    static let blurb = "Records every screen, the mic, and a camera if you want one, each to "
+        + "its own file, ready to sync in Final Cut Pro."
     static let credit = "A Prompt It Yourself project. MIT licence. © 2026 Mergodon Limited."
     /// The same list, in the same order, as the promptityourself.com footer.
     static let channels: [(name: String, url: URL)] = [
