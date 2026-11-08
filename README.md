@@ -25,6 +25,10 @@ microphone in each file. Drop the files into Final Cut Pro and sync them on the 
   once, then beeps once a second and plays a "go" tone. Start talking after "go". The tones are pure
   sines for an editor or an agent to find: each count is 880 Hz for 0.12 s, "go" is 1760 Hz for
   0.4 s. They are at full level on the app-sound track, and fainter on the mic from the speakers.
+  The count also shows on screen: a big number on an amber tile in the middle of each recorded
+  area, everything else dimmed. After "go" an area recording keeps a red frame and a light dim until
+  you stop, so you see where you record. None of this is in the files: the recording leaves these
+  windows out.
 - The same mic track is in every file, so **Synchronize Clips** in FCP lines them up. A clap at the start is a good backup.
 - **Camera (optional):** choose a camera in the menu (default **None**). It records 1080p HEVC at 30 fps (matches the screens); **Camera Frame Rate** offers every rate the camera supports, e.g. 50/60 for slow motion
   with the same mic track to `camera.mov`. The camera starts first, so it never misses the clap.

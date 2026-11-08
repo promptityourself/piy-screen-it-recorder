@@ -173,8 +173,34 @@ final class Recorder: NSObject, ObservableObject {
                 }
             }
 
-            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            // The overlay (countdown, dim, frame) goes up first, so the shareable content lists its
+            // windows and every stream leaves them out: you see it, the files do not.
+            let area = RecordArea.shared
+            var areas: [NSScreen: CGRect] = [:]
+            for screen in NSScreen.screens {
+                if let uuid = area.display {
+                    guard RecordArea.uuid(screen) == uuid else { continue }
+                    areas[screen] = area.unitRect.map { RecordArea.frame($0, on: screen) } ?? screen.frame
+                } else {
+                    areas[screen] = screen.frame
+                }
+            }
+            RecordingOverlay.show(areas: areas)
+            // The window server lists new windows a moment later: ask again until both are there.
+            let overlayIDs = Set(RecordingOverlay.windowNumbers)
+            var content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            var hidden = content.windows.filter { overlayIDs.contains(Int($0.windowID)) }
+            for _ in 0..<20 where hidden.count != overlayIDs.count {
+                try await Task.sleep(for: .milliseconds(50))
+                content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+                hidden = content.windows.filter { overlayIDs.contains(Int($0.windowID)) }
+            }
             guard !content.displays.isEmpty else { throw RecError("No displays found") }
+            if hidden.count != overlayIDs.count {
+                // Never record the overlay: without its windows to exclude, record without it.
+                Self.log.error("overlay windows not in the shareable content: \(hidden.count) of \(overlayIDs.count)")
+                RecordingOverlay.hide()
+            }
             if let cameraID {
                 guard await AVCaptureDevice.requestAccess(for: .video) else {
                     throw RecError("Screen It Recorder has no permission to use the camera.")
@@ -191,7 +217,6 @@ final class Recorder: NSObject, ObservableObject {
 
             // screen<i> keeps the display's place in ScreenCaptureKit's order even when only one
             // display records, so Playback puts the file back on that display.
-            let area = RecordArea.shared
             var displays = Array(content.displays.enumerated())
             if let uuid = area.display {
                 displays = displays.filter { RecordArea.uuid($0.element.displayID) == uuid }
@@ -203,7 +228,8 @@ final class Recorder: NSObject, ObservableObject {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             for (i, display) in displays {
                 let unit = area.display == nil ? nil : area.unitRect
-                try makeStream(display: display, area: unit, url: dir.appending(path: "screen\(i).mov"))
+                try makeStream(display: display, area: unit, excluding: hidden.count == overlayIDs.count ? hidden : [],
+                               url: dir.appending(path: "screen\(i).mov"))
             }
             if let camera {
                 status = "Starting camera…"
@@ -234,8 +260,11 @@ final class Recorder: NSObject, ObservableObject {
                     await Countdown.run(seconds) { left in
                         guard self.isRecording else { return }
                         self.status = left > 0 ? "● Recording — start talking after the go tone: \(left)" : recording
+                        RecordingOverlay.set(left > 0 ? .count(left) : .recording)
                     }
                 }
+            } else {
+                RecordingOverlay.set(.recording)
             }
         } catch {
             camera?.stop()
@@ -286,9 +315,10 @@ final class Recorder: NSObject, ObservableObject {
     }
 
     /// `area`: the part of the display to record, as fractions of it (origin top left); nil = all of it.
-    private func makeStream(display: SCDisplay, area: CGRect?, url: URL) throws {
+    /// `excluding`: our own overlay windows, seen on screen but never recorded.
+    private func makeStream(display: SCDisplay, area: CGRect?, excluding: [SCWindow], url: URL) throws {
         let crop = area.map { RecordArea.scale($0, to: CGSize(width: display.width, height: display.height)).integral }
-        let filter = SCContentFilter(display: display, excludingWindows: [])
+        let filter = SCContentFilter(display: display, excludingWindows: excluding)
         let cfg = SCStreamConfiguration()
         // Native = every physical pixel (5120×2880 on a Studio Display); 1440p = 2560 wide.
         let native = Int((Double(display.width) * Double(filter.pointPixelScale)).rounded())
@@ -335,6 +365,7 @@ final class Recorder: NSObject, ObservableObject {
     }
 
     private func teardown() async {
+        RecordingOverlay.hide()
         watchdog?.cancel()
         watchdog = nil
         writers.removeAll()
