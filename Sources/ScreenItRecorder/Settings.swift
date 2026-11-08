@@ -218,7 +218,6 @@ private struct ShortcutsTab: View {
 enum About {
     static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
     static let repo = URL(string: "https://github.com/promptityourself/piy-screen-it-recorder")!
-    // The project page does not exist yet (promptityourself-web#116); point at it once live.
     static let site = URL(string: "https://promptityourself.com/projects/screen-it-recorder/")!
     static let blurb = "Records every screen, and a camera if you want one, to separate files "
         + "with the same mic track, so Final Cut Pro can sync them."

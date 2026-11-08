@@ -23,8 +23,10 @@ final class Recorder: NSObject, ObservableObject {
     @Published private(set) var isRecording = false
     @Published private(set) var status = "Ready"
     @Published private(set) var lastError: String?
+    /// nil = no microphone. Stored as "" so "None" survives a restart; a missing key means
+    /// never chosen, and then the system default mic is used.
     @Published var micID: String? {
-        didSet { UserDefaults.standard.set(micID, forKey: "micID") }
+        didSet { UserDefaults.standard.set(micID ?? "", forKey: "micID") }
     }
     @Published var cameraID: String? {
         didSet { UserDefaults.standard.set(cameraID, forKey: "cameraID") }
@@ -74,6 +76,7 @@ final class Recorder: NSObject, ObservableObject {
     private var stoppedStreams: Set<ObjectIdentifier> = []
     private var cameraFile: URL?
     private var watchdog: Task<Void, Never>?
+    private var deviceObservers: [NSObjectProtocol] = []
 
     /// Every display together, at the measured rate of the chosen settings.
     var bytesPerSecond: Double {
@@ -91,7 +94,8 @@ final class Recorder: NSObject, ObservableObject {
     override init() {
         let d = UserDefaults.standard
         hideWidgets = d.object(forKey: "hideWidgets") as? Bool ?? true
-        micID = d.string(forKey: "micID") ?? AVCaptureDevice.default(for: .audio)?.uniqueID
+        micID = d.string(forKey: "micID").map { $0.isEmpty ? nil : $0 }
+            ?? AVCaptureDevice.default(for: .audio)?.uniqueID
         cameraID = d.string(forKey: "cameraID")  // off unless chosen
         folder = d.string(forKey: "saveFolder").map { URL(filePath: $0, directoryHint: .isDirectory) } ?? Self.defaultFolder
         cameraFPS = d.object(forKey: "cameraFPS") as? Int ?? Int(Self.fps)  // match the screens
@@ -99,6 +103,12 @@ final class Recorder: NSObject, ObservableObject {
         codec = d.string(forKey: "recCodec").flatMap(Codec.init) ?? .hevc
         resolution = d.string(forKey: "recResolution").flatMap(Resolution.init) ?? .p1440
         super.init()
+        // A mic or camera plugged in (or out) while Settings is open shows up in its pickers at once.
+        for name in [AVCaptureDevice.wasConnectedNotification, AVCaptureDevice.wasDisconnectedNotification] {
+            deviceObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { Recorder.shared.objectWillChange.send() }
+            })
+        }
     }
 
     func start() async {
