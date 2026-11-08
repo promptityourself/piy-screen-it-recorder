@@ -50,20 +50,32 @@ final class RecordArea: ObservableObject {
         self.preset = uuid == nil ? .full : preset
     }
 
+    /// The part of the chosen display to record, as fractions of it (origin top left); nil = all of it.
+    var unitRect: CGRect? {
+        switch preset {
+        case .full: nil
+        case .left: CGRect(x: 0, y: 0, width: 0.5, height: 1)
+        case .right: CGRect(x: 0.5, y: 0, width: 0.5, height: 1)
+        case .custom: custom
+        }
+    }
+
     /// The part of a display `size` points large to record, in its points (origin top left);
     /// nil = all of it.
     func rect(in size: CGSize) -> CGRect? {
-        let r: CGRect
-        switch preset {
-        case .full: return nil
-        case .left: r = CGRect(x: 0, y: 0, width: 0.5, height: 1)
-        case .right: r = CGRect(x: 0.5, y: 0, width: 0.5, height: 1)
-        case .custom:
-            guard let custom else { return nil }
-            r = custom
-        }
-        return CGRect(x: r.minX * size.width, y: r.minY * size.height,
-                      width: r.width * size.width, height: r.height * size.height).integral
+        unitRect.map { Self.scale($0, to: size).integral }
+    }
+
+    static func scale(_ unit: CGRect, to size: CGSize) -> CGRect {
+        CGRect(x: unit.minX * size.width, y: unit.minY * size.height,
+               width: unit.width * size.width, height: unit.height * size.height)
+    }
+
+    /// A unit rect (origin top left) on `screen`, in global screen coordinates (origin bottom left).
+    static func frame(_ unit: CGRect, on screen: NSScreen) -> CGRect {
+        let f = screen.frame
+        return CGRect(x: f.minX + unit.minX * f.width, y: f.maxY - unit.maxY * f.height,
+                      width: unit.width * f.width, height: unit.height * f.height).integral
     }
 
     /// The share of one display recorded: 1 for a full display, 0.5 for a half.
@@ -110,20 +122,34 @@ final class RecordArea: ObservableObject {
     }
 }
 
-/// Select Area: a dim cover on every display; drag a rectangle on one of them. That display
-/// and area become the recording area. Esc cancels.
+/// Select Area: a dim cover on every display, showing the current area (a dragged one or a
+/// half) if one is chosen. Drag inside it to move it, drag an edge or corner to resize it, or drag
+/// anywhere else for a new one, on any display. Enter, a double-click or Use This Area takes it;
+/// Esc cancels.
 @MainActor
 enum AreaPicker {
-    private static var windows: [NSWindow] = []
+    private static var views: [PickerView] = []
     /// Smaller than this (points) is a click, not an area.
     static let minSide: CGFloat = 64
 
-    static var isOpen: Bool { !windows.isEmpty }
+    /// The area being chosen: its screen and its rect in that screen's view (origin bottom left).
+    fileprivate static var selection: (screen: NSScreen, rect: CGRect)? {
+        didSet { views.forEach { $0.needsDisplay = true; $0.window?.invalidateCursorRects(for: $0) } }
+    }
+
+    static var isOpen: Bool { !views.isEmpty }
 
     static func show() {
         guard !isOpen, !Recorder.shared.isRecording else { return }
         GreenScreen.shared.hide()
         Playback.shared.stop()
+        let area = RecordArea.shared
+        selection = nil
+        if let uuid = area.display, let unit = area.unitRect,
+           let screen = NSScreen.screens.first(where: { RecordArea.uuid($0) == uuid }) {
+            let r = RecordArea.scale(unit, to: screen.frame.size)
+            selection = (screen, CGRect(x: r.minX, y: screen.frame.height - r.maxY, width: r.width, height: r.height).integral)
+        }
         for screen in NSScreen.screens {
             let w = PickerWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
             w.level = .screenSaver
@@ -132,25 +158,27 @@ enum AreaPicker {
             w.backgroundColor = .clear
             w.hasShadow = false
             w.isReleasedWhenClosed = false
-            w.acceptsMouseMovedEvents = true
-            w.contentView = PickerView(screen: screen)
+            let view = PickerView(screen: screen)
+            w.contentView = view
             w.setFrame(screen.frame, display: true)
             w.orderFrontRegardless()
-            windows.append(w)
+            views.append(view)
         }
         NSApp.activate()
-        (windows.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? windows.first)?.makeKey()
+        let key = selection?.screen ?? NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
+        (views.first { $0.screen == key } ?? views.first)?.window?.makeKey()
     }
 
     static func close() {
-        windows.forEach { $0.orderOut(nil) }
-        windows.removeAll()
+        views.forEach { $0.window?.orderOut(nil) }
+        views.removeAll()
+        selection = nil
     }
 
-    /// `rect` in the screen's view coordinates (origin bottom left).
-    fileprivate static func picked(_ rect: CGRect, on screen: NSScreen) {
+    /// Take the selection as the recording area.
+    static func confirm() {
+        guard let (screen, rect) = selection, let uuid = RecordArea.uuid(screen) else { return }
         close()
-        guard let uuid = RecordArea.uuid(screen) else { return }
         let size = screen.frame.size
         let area = RecordArea.shared
         area.custom = CGRect(x: rect.minX / size.width, y: (size.height - rect.maxY) / size.height,
@@ -162,18 +190,26 @@ enum AreaPicker {
 private final class PickerWindow: NSWindow {
     override var canBecomeKey: Bool { true }
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == UInt16(kVK_Escape) {
-            MainActor.assumeIsolated { AreaPicker.close() }
-        } else {
-            super.keyDown(with: event)
+        switch Int(event.keyCode) {
+        case kVK_Escape: MainActor.assumeIsolated { AreaPicker.close() }
+        case kVK_Return, kVK_ANSI_KeypadEnter: MainActor.assumeIsolated { AreaPicker.confirm() }
+        default: super.keyDown(with: event)
         }
     }
 }
 
+@MainActor
 private final class PickerView: NSView {
-    private let screen: NSScreen
-    private var start: NSPoint?
-    private var current: NSPoint?
+    let screen: NSScreen
+    /// What a drag does: draw a new area, move the area, or move some of its edges.
+    private enum Drag { case new(NSPoint), move(CGRect, NSPoint), resize(CGRect, NSPoint, Edges) }
+    private struct Edges: OptionSet {
+        let rawValue: Int
+        static let left = Edges(rawValue: 1), right = Edges(rawValue: 2), bottom = Edges(rawValue: 4), top = Edges(rawValue: 8)
+    }
+    private var drag: Drag?
+    private var before: (screen: NSScreen, rect: CGRect)?  // restored when a new drag is only a click
+    private static let grab: CGFloat = 10  // how near an edge counts as on it, in points
 
     init(screen: NSScreen) {
         self.screen = screen
@@ -182,64 +218,144 @@ private final class PickerView: NSView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    private var selection: CGRect? {
-        guard let start, let current else { return nil }
-        let r = CGRect(x: min(start.x, current.x), y: min(start.y, current.y),
-                       width: abs(current.x - start.x), height: abs(current.y - start.y))
-        return r.intersection(bounds).integral
+    private var mine: CGRect? { AreaPicker.selection.flatMap { $0.screen == screen ? $0.rect : nil } }
+
+    private func edges(at p: NSPoint, of r: CGRect) -> Edges {
+        guard r.insetBy(dx: -Self.grab, dy: -Self.grab).contains(p) else { return [] }
+        var e: Edges = []
+        if abs(p.x - r.minX) <= Self.grab { e.insert(.left) } else if abs(p.x - r.maxX) <= Self.grab { e.insert(.right) }
+        if abs(p.y - r.minY) <= Self.grab { e.insert(.bottom) } else if abs(p.y - r.maxY) <= Self.grab { e.insert(.top) }
+        return e
     }
 
-    override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair) }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .crosshair)
+        // Only a real area gets move and resize cursors (a drag starts tiny).
+        guard let r = mine, !r.isNull, r.width > 4 * Self.grab, r.height > 4 * Self.grab else { return }
+        addCursorRect(r.insetBy(dx: Self.grab, dy: Self.grab), cursor: .openHand)
+        let g = Self.grab
+        addCursorRect(CGRect(x: r.minX - g, y: r.minY + g, width: 2 * g, height: r.height - 2 * g), cursor: .resizeLeftRight)
+        addCursorRect(CGRect(x: r.maxX - g, y: r.minY + g, width: 2 * g, height: r.height - 2 * g), cursor: .resizeLeftRight)
+        addCursorRect(CGRect(x: r.minX + g, y: r.minY - g, width: r.width - 2 * g, height: 2 * g), cursor: .resizeUpDown)
+        addCursorRect(CGRect(x: r.minX + g, y: r.maxY - g, width: r.width - 2 * g, height: 2 * g), cursor: .resizeUpDown)
+        if let b = buttonRect(for: r) { addCursorRect(b, cursor: .pointingHand) }
+    }
+
     override func mouseDown(with event: NSEvent) {
-        start = convert(event.locationInWindow, from: nil)
-        current = start
-        needsDisplay = true
+        let p = convert(event.locationInWindow, from: nil)
+        window?.makeKey()
+        if let r = mine {
+            if let b = buttonRect(for: r), b.contains(p) { AreaPicker.confirm(); return }
+            let e = edges(at: p, of: r)
+            if !e.isEmpty { drag = .resize(r, p, e); return }
+            if r.contains(p) {
+                if event.clickCount == 2 { AreaPicker.confirm(); return }
+                drag = .move(r, p)
+                NSCursor.closedHand.set()
+                return
+            }
+        }
+        before = AreaPicker.selection
+        drag = .new(p)
     }
 
     override func mouseDragged(with event: NSEvent) {
-        current = convert(event.locationInWindow, from: nil)
-        needsDisplay = true
+        let p = convert(event.locationInWindow, from: nil)
+        let b = bounds
+        switch drag {
+        case let .new(start)?:
+            // An empty rect's `integral` is CGRect.null (infinite origin): keep the old one until it has size.
+            let r = CGRect(x: min(start.x, p.x), y: min(start.y, p.y), width: abs(p.x - start.x), height: abs(p.y - start.y))
+                .intersection(b).integral
+            if !r.isNull, r.width >= 1, r.height >= 1 { AreaPicker.selection = (screen, r) }
+        case let .move(r, start)?:
+            var moved = r.offsetBy(dx: p.x - start.x, dy: p.y - start.y)
+            moved.origin.x = min(max(b.minX, moved.minX), b.maxX - moved.width)
+            moved.origin.y = min(max(b.minY, moved.minY), b.maxY - moved.height)
+            AreaPicker.selection = (screen, moved.integral)
+        case let .resize(r, start, e)?:
+            let dx = p.x - start.x, dy = p.y - start.y
+            let m = AreaPicker.minSide
+            var x0 = r.minX, x1 = r.maxX, y0 = r.minY, y1 = r.maxY
+            if e.contains(.left) { x0 = min(max(b.minX, x0 + dx), x1 - m) }
+            if e.contains(.right) { x1 = max(min(b.maxX, x1 + dx), x0 + m) }
+            if e.contains(.bottom) { y0 = min(max(b.minY, y0 + dy), y1 - m) }
+            if e.contains(.top) { y1 = max(min(b.maxY, y1 + dy), y0 + m) }
+            AreaPicker.selection = (screen, CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0).integral)
+        case nil:
+            break
+        }
     }
 
     override func mouseUp(with event: NSEvent) {
-        current = convert(event.locationInWindow, from: nil)
-        let rect = selection
-        start = nil
-        current = nil
-        needsDisplay = true
-        if let rect, rect.width >= AreaPicker.minSide, rect.height >= AreaPicker.minSide {
-            MainActor.assumeIsolated { AreaPicker.picked(rect, on: screen) }
+        if case .new = drag, let r = mine, r.width < AreaPicker.minSide || r.height < AreaPicker.minSide {
+            AreaPicker.selection = before  // a click, or too small: keep what was there
         }
+        drag = nil
+        window?.invalidateCursorRects(for: self)
     }
+
+    /// "Use This Area" under the area, or above it near the bottom of the display.
+    private func buttonRect(for r: CGRect) -> CGRect? {
+        let size = (Self.button as NSString).size(withAttributes: Self.attrs)
+        let w = size.width + 24, h = size.height + 12
+        var y = r.minY - h - 12
+        if y < 8 { y = r.maxY + 12 }
+        if y + h > bounds.maxY - 8 { y = r.minY + 12 }  // a nearly full-height area: inside it
+        let x = min(max(8, r.midX - w / 2), bounds.maxX - w - 8)
+        return CGRect(x: x, y: y, width: w, height: h)
+    }
+
+    private static let button = "Use This Area (Enter)"
+    private static let attrs: [NSAttributedString.Key: Any] = [
+        .font: NSFont.systemFont(ofSize: 22, weight: .semibold), .foregroundColor: NSColor.white,
+    ]
 
     override func draw(_ dirty: NSRect) {
         NSColor.black.withAlphaComponent(0.45).setFill()
         bounds.fill()
-        let hint = "Drag the area to record. Esc cancels."
-        if let r = selection {
-            r.fill(using: .clear)  // the chosen area shows through, undimmed
-            ClickHighlight.red.setStroke()
-            let frame = NSBezierPath(rect: r.insetBy(dx: -1.5, dy: -1.5))
-            frame.lineWidth = 3
-            frame.stroke()
-            let px = screen.backingScaleFactor
-            label("\(Int(r.width * px)) × \(Int(r.height * px)) px", at: NSPoint(x: r.midX, y: r.minY - 30))
-        } else {
-            label(hint, at: NSPoint(x: bounds.midX, y: bounds.midY))
+        guard let r = mine else {
+            label(AreaPicker.selection == nil ? "Drag the area to record. Esc cancels."
+                  : "Drag here for a new area on this display.", at: NSPoint(x: bounds.midX, y: bounds.midY))
+            return
+        }
+        r.fill(using: .clear)  // the chosen area shows through, undimmed
+        // …but not fully transparent: macOS sends clicks on alpha-0 pixels to the window below,
+        // and a drag inside the area must move it.
+        NSColor.black.withAlphaComponent(0.01).setFill()
+        r.fill()
+        ClickHighlight.red.setStroke()
+        let frame = NSBezierPath(rect: r.insetBy(dx: -1.5, dy: -1.5))
+        frame.lineWidth = 3
+        frame.stroke()
+        // Handles on the corners and edge midpoints.
+        ClickHighlight.red.setFill()
+        for x in [r.minX, r.midX, r.maxX] {
+            for y in [r.minY, r.midY, r.maxY] where !(x == r.midX && y == r.midY) {
+                NSBezierPath(rect: CGRect(x: x - 5, y: y - 5, width: 10, height: 10)).fill()
+            }
+        }
+        let px = screen.backingScaleFactor
+        label("\(Int(r.width * px)) × \(Int(r.height * px)) px · drag to move or resize · Esc cancels",
+              at: NSPoint(x: r.midX, y: r.maxY + 30), size: 16)
+        if let b = buttonRect(for: r) {
+            ClickHighlight.red.setFill()
+            NSBezierPath(roundedRect: b, xRadius: 8, yRadius: 8).fill()
+            (Self.button as NSString).draw(at: NSPoint(x: b.minX + 12, y: b.minY + 6), withAttributes: Self.attrs)
         }
     }
 
-    private func label(_ text: String, at centre: NSPoint) {
+    private func label(_ text: String, at centre: NSPoint, size: CGFloat = 22) {
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 22, weight: .semibold),
-            .foregroundColor: NSColor.white,
+            .font: NSFont.systemFont(ofSize: size, weight: .semibold), .foregroundColor: NSColor.white,
         ]
         let s = text as NSString
-        let size = s.size(withAttributes: attrs)
-        var box = NSRect(x: centre.x - size.width / 2 - 12, y: centre.y - size.height / 2 - 6,
-                         width: size.width + 24, height: size.height + 12)
+        let sz = s.size(withAttributes: attrs)
+        var box = NSRect(x: centre.x - sz.width / 2 - 12, y: centre.y - sz.height / 2 - 6,
+                         width: sz.width + 24, height: sz.height + 12)
+        box.origin.x = max(8, min(bounds.maxX - box.width - 8, box.minX))
         box.origin.y = max(8, min(bounds.maxY - box.height - 8, box.minY))
         NSColor.black.withAlphaComponent(0.75).setFill()
         NSBezierPath(roundedRect: box, xRadius: 8, yRadius: 8).fill()

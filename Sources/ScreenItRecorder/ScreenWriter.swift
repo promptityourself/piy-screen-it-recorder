@@ -73,11 +73,22 @@ final class ScreenWriter: NSObject, SCStreamOutput, @unchecked Sendable {
     private var reportedFailure = false
     private let onError: (Error) -> Void
 
+    /// QuickTime metadata key for the recorded part of the display: "x y w h" as fractions of it,
+    /// origin top left. Absent for a whole display. Playback puts the video back there.
+    static let areaKey = "com.promptityourself.screen-it-recorder.area"
+    static let areaID = AVMetadataItem.identifier(forKey: areaKey, keySpace: .quickTimeMetadata)!
+
     init(url: URL, width: Int, height: Int, codec: Codec, quality: Quality, mic: AVCaptureDevice?,
-         onError: @escaping (Error) -> Void) throws {
+         area: CGRect?, onError: @escaping (Error) -> Void) throws {
         self.url = url
         self.onError = onError
         writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+        if let area {
+            let item = AVMutableMetadataItem()
+            item.identifier = Self.areaID
+            item.value = [area.minX, area.minY, area.width, area.height].map { String(Double($0)) }.joined(separator: " ") as NSString
+            writer.metadata = [item]
+        }
 
         var settings: [String: Any] = [
             AVVideoWidthKey: width,

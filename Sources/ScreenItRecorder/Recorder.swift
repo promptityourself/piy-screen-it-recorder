@@ -190,8 +190,8 @@ final class Recorder: NSObject, ObservableObject {
             }
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             for (i, display) in displays {
-                let crop = area.display == nil ? nil : area.rect(in: CGSize(width: display.width, height: display.height))
-                try makeStream(display: display, crop: crop, url: dir.appending(path: "screen\(i).mov"))
+                let unit = area.display == nil ? nil : area.unitRect
+                try makeStream(display: display, area: unit, url: dir.appending(path: "screen\(i).mov"))
             }
             if let camera {
                 status = "Starting camera…"
@@ -261,8 +261,9 @@ final class Recorder: NSObject, ObservableObject {
         NSWorkspace.shared.open(folder)
     }
 
-    /// `crop`: the part of the display to record, in its points (origin top left); nil = all of it.
-    private func makeStream(display: SCDisplay, crop: CGRect?, url: URL) throws {
+    /// `area`: the part of the display to record, as fractions of it (origin top left); nil = all of it.
+    private func makeStream(display: SCDisplay, area: CGRect?, url: URL) throws {
+        let crop = area.map { RecordArea.scale($0, to: CGSize(width: display.width, height: display.height)).integral }
         let filter = SCContentFilter(display: display, excludingWindows: [])
         let cfg = SCStreamConfiguration()
         // Native = every physical pixel (5120×2880 on a Studio Display); 1440p = 2560 wide.
@@ -290,7 +291,7 @@ final class Recorder: NSObject, ObservableObject {
         }
 
         let writer = try ScreenWriter(url: url, width: cfg.width, height: cfg.height, codec: codec,
-                                      quality: quality, mic: mic) { error in
+                                      quality: quality, mic: mic, area: area) { error in
             Task { @MainActor in self.fail(error) }
         }
         let stream = SCStream(filter: filter, configuration: cfg, delegate: self)

@@ -188,12 +188,13 @@ final class Playback: ObservableObject {
         GreenScreen.shared.hide()
 
         for (screen, url) in targets {
+            let area = await Self.area(of: url)
             let player = AVPlayer(url: url)
             player.automaticallyWaitsToMinimizeStalling = false  // required by setRate(_:time:atHostTime:)
             player.actionAtItemEnd = .pause
             player.isMuted = !videoSound
             players.append(player)
-            windows.append(PlayerWindow(screen: screen, player: player))
+            windows.append(PlayerWindow(screen: screen, player: player, area: area))
         }
         state = .countdown
         NSApp.activate()
@@ -365,10 +366,25 @@ private enum Beep {
     }
 }
 
-/// A borderless window over one display that shows one player, black around the video.
+extension Playback {
+    /// The part of its display a file was recorded from (fractions, origin top left); nil = all of it,
+    /// or a file from elsewhere.
+    static func area(of url: URL) async -> CGRect? {
+        guard let items = try? await AVURLAsset(url: url).load(.metadata),
+              let item = AVMetadataItem.metadataItems(from: items, filteredByIdentifier: ScreenWriter.areaID).first,
+              let text = try? await item.load(.stringValue) else { return nil }
+        let n = text.split(separator: " ").compactMap { Double($0) }
+        guard n.count == 4, n[2] > 0, n[3] > 0 else { return nil }
+        return CGRect(x: n[0], y: n[1], width: n[2], height: n[3])
+    }
+}
+
+/// A borderless window that shows one player, black around the video: over the whole display, or
+/// over just the area the file was recorded from, so the rest of the display stays in view.
 private final class PlayerWindow: NSWindow {
-    init(screen: NSScreen, player: AVPlayer) {
-        super.init(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
+    init(screen: NSScreen, player: AVPlayer, area: CGRect?) {
+        let frame = area.map { RecordArea.frame($0, on: screen) } ?? screen.frame
+        super.init(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
         level = .screenSaver  // above the menu bar and the Dock, as the green screen
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         backgroundColor = .black
@@ -381,7 +397,7 @@ private final class PlayerWindow: NSWindow {
         view.layer = layer  // layer-hosting: set the layer before wantsLayer
         view.wantsLayer = true
         contentView = view
-        setFrame(screen.frame, display: true)
+        setFrame(frame, display: true)
         orderFrontRegardless()
     }
 
