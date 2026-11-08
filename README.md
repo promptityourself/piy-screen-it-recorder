@@ -7,7 +7,7 @@ microphone to a file of its own. Drop the files into Final Cut Pro and sync them
 
 - **Setup bar** (⌃⌥⇧R or menu → **Start Recording…**), as in QuickTime: the current area shows
   on screen with the rest dimmed, and a bar at the bottom chooses the display, Full / Left / Right /
-  Selected, and the options (mic, camera, countdown, app sound, click ripples). Drag the area to move
+  Selected, and the options (mic, camera, countdown, the apps whose sound to record, click ripples). Drag the area to move
   or resize it. Enter, **Record** or ⌃⌥⇧R again starts; Esc closes. Settings → Recording turns the
   bar off, and then ⌃⌥⇧R starts at once.
 - One `.mov` per display, 30 fps. Choose in **Settings → Recording**:
@@ -23,22 +23,27 @@ microphone to a file of its own. Drop the files into Final Cut Pro and sync them
   display at Native is 2560×2880. The file keeps the display's number (`screen1.mov` is still
   display 1) and stores its area, so Playback puts it back on that part of that display and the rest
   of the display stays in view.
-- **The mic never goes in a screen file.** It records to `mic.wav` (uncompressed 24-bit), which
-  starts with the first screen file's first frame. Each screen file has one audio track, the sound
-  of your apps (`App sound`, stereo, AAC; Settings → Recording turns it off). The camera file
-  carries the mic too. Use headphones, or the mic also hears the app sound from the speakers.
-- **Mic monitors are left out of the app sound.** An app that plays your mic back to your
-  headphones (Shure MOTIV Mix) would put your voice in the app sound a moment late, as an echo.
+- **Every sound has its own file**, so you edit channel by channel:
+  - `mic.wav`: the mic (uncompressed 24-bit). It never goes in a screen file.
+  - `app-<name>.wav`: the sound of one app you ticked (uncompressed 24-bit stereo), for example
+    `app-WhatsApp.wav`. Tick apps in the setup bar (Options → App Sound) or in Settings →
+    App sound; none is ticked at first, so no app sound records. The list shows the running apps
+    and the ones you ticked before; **Choose App…** adds one that is not running. An app that opens
+    during the recording records from then on (within about a second), and the time it was not
+    running is silence, so the file stays in sync.
+  - `camera.mov` carries the mic too.
+  All audio files start together, at the first frame of the screens, and run to the stop.
+  ScreenCaptureKit gives the sound only of an app that has a window (it may be hidden).
 - **Start countdown** (Settings → Recording: Off / 3 (default) / 5 / 10 s): the recording starts at
   once, then beeps once a second and plays a "go" tone. Start talking after "go". The tones are pure
   sines for an editor or an agent to find: each count is 880 Hz for 0.12 s, "go" is 1760 Hz for
-  0.4 s. They are at full level on the app-sound track, and fainter in `mic.wav` from the speakers.
+  0.4 s. They are at full level on each screen file's only audio track (`Countdown tones`), and fainter in `mic.wav` from the speakers.
   The count also shows on screen: a big number on an amber tile in the middle of each recorded
   area, everything else dimmed. After "go" an area recording keeps a red frame and a light dim until
   you stop, so you see where you record. None of this is in the files: the recording leaves these
   windows out.
-- The same app sound (with the count tones) is in every screen file, so **Synchronize Clips** in
-  FCP lines them up. `mic.wav` starts with the first screen file; the camera file has the mic.
+- The same count tones are in every screen file, so **Synchronize Clips** in FCP lines them up.
+  The audio files start at the first screen frame; the camera file has the mic.
 - **Camera (optional):** choose a camera in the menu (default **None**). It records 1080p HEVC at 30 fps (matches the screens); **Camera Frame Rate** offers every rate the camera supports, e.g. 50/60 for slow motion
   with the mic to `camera.mov`. The camera starts first, so it never misses the clap.
 - **Green / blue screen:** press **⌃⌥G** (anywhere) to cover every display with a solid key

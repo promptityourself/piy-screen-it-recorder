@@ -83,7 +83,6 @@ private struct RecordingTab: View {
                 Picker("Start countdown", selection: $rec.startCountdown) {
                     ForEach(Countdown.choices, id: \.self) { Text($0 == 0 ? "Off" : "\($0) seconds").tag($0) }
                 }
-                Toggle("Record app sound in the screen files", isOn: $rec.appSound)
                 Toggle("Hide desktop widgets while recording", isOn: $rec.hideWidgets)
                 LabeledContent("Saves to") {
                     VStack(alignment: .trailing) {
@@ -102,6 +101,19 @@ private struct RecordingTab: View {
                 if rec.isRecording {
                     Text("Stop the recording to change these.").font(.caption).foregroundStyle(.secondary)
                 }
+            }
+            .disabled(rec.isRecording)
+
+            Section {
+                ForEach(rec.soundAppChoices, id: \.id) { Toggle($0.name, isOn: rec.soundApp($0.id)) }
+                Button("Choose an App That Is Not Running…") { rec.chooseSoundApp() }
+            } header: {
+                Text("App sound")
+            } footer: {
+                Text("Each ticked app records to its own file, app-<name>.wav, next to mic.wav. None is "
+                    + "ticked at first. An app that is not running records from when it opens. The screen "
+                    + "files have only the countdown tones, to sync on.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             .disabled(rec.isRecording)
 

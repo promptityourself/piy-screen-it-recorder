@@ -99,7 +99,11 @@ private struct SetupBarView: View {
                 Picker("Countdown", selection: $rec.startCountdown) {
                     ForEach(Countdown.choices, id: \.self) { Text($0 == 0 ? "Off" : "\($0) seconds").tag($0) }
                 }
-                Toggle("Record App Sound", isOn: $rec.appSound)
+                Menu("App Sound: \(rec.appSoundApps.isEmpty ? "None" : rec.appSoundApps.map(Recorder.appName).joined(separator: ", "))") {
+                    ForEach(rec.soundAppChoices, id: \.id) { Toggle($0.name, isOn: rec.soundApp($0.id)) }
+                    Divider()
+                    Button("Choose App…") { rec.chooseSoundApp() }
+                }
                 Picker("Highlight Clicks", selection: $clicks.mode) {
                     ForEach(ClickHighlight.Mode.allCases) { Text($0.label).tag($0) }
                 }

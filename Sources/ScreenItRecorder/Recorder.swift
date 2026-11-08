@@ -2,9 +2,11 @@ import AppKit
 import AVFoundation
 import os
 import ScreenCaptureKit
+import SwiftUI
 
-/// Records every display to its own .mov (HEVC, ~1440p, 30fps) and the mic to its own mic.wav,
-/// which starts with the first screen file. The camera file carries the mic too.
+/// Records every display to its own .mov (HEVC, ~1440p, 30fps), the mic to mic.wav, and each
+/// chosen app's sound to its own app-<name>.wav. The audio files start together (see Anchor).
+/// The camera file carries the mic too.
 @MainActor
 final class Recorder: NSObject, ObservableObject {
     static let shared = Recorder()
@@ -38,9 +40,10 @@ final class Recorder: NSObject, ObservableObject {
     @Published var startCountdown: Int {
         didSet { UserDefaults.standard.set(startCountdown, forKey: "startCountdown") }
     }
-    /// Record the apps' sound as a second track in each screen file.
-    @Published var appSound: Bool {
-        didSet { UserDefaults.standard.set(appSound, forKey: "appSound") }
+    /// Bundle ids of the apps whose sound to record, each to its own file. Empty (the default):
+    /// no app sound. An app need not be running; it records from when it opens.
+    @Published var appSoundApps: [String] {
+        didSet { UserDefaults.standard.set(appSoundApps, forKey: "appSoundApps") }
     }
     nonisolated static let appSoundRate = 48_000
     /// ⌃⌥⇧R and Start Recording open the setup bar first; off = they start at once.
@@ -85,12 +88,12 @@ final class Recorder: NSObject, ObservableObject {
     static let saveTimeout: Duration = .seconds(10)
     nonisolated static let log = Logger(subsystem: "com.mergodon.ScreenItRecorder", category: "recorder")
     private var writers: [ScreenWriter] = []  // same order as `streams`
-    /// The apps' sound, captured once for every screen file; nil when app sound is off.
-    private var soundStream: SCStream?
-    private var sound: AppSound?
-    /// Apps that play the mic back to the speakers or headphones. Their sound is never recorded,
-    /// or the app sound repeats your voice a moment late (MOTIV Mix: 157 ms, measured 2026-11-09).
-    static let micMonitors: Set<String> = ["com.shure.motivmix"]
+    /// Audio-only streams: our countdown tones (into every screen file), then one per chosen app.
+    private var toneStream: SCStream?
+    private var toneOutput: ToneFanout?
+    private var appStreams: [AppSoundStream] = []
+    private var micFile: AudioFile?
+    private var appWatch: Task<Void, Never>?
     /// Streams that already stopped (Stop in the macOS menu bar, an error). Stopping one again
     /// took ~35 s to return (2026-10-11), so stop() skips them.
     private var stoppedStreams: Set<ObjectIdentifier> = []
@@ -117,7 +120,7 @@ final class Recorder: NSObject, ObservableObject {
         let d = UserDefaults.standard
         hideWidgets = d.object(forKey: "hideWidgets") as? Bool ?? true
         startCountdown = d.object(forKey: "startCountdown") as? Int ?? 3
-        appSound = d.object(forKey: "appSound") as? Bool ?? true
+        appSoundApps = d.stringArray(forKey: "appSoundApps") ?? []
         setupBar = d.object(forKey: "setupBar") as? Bool ?? true
         micID = d.string(forKey: "micID").map { $0.isEmpty ? nil : $0 }
             ?? AVCaptureDevice.default(for: .audio)?.uniqueID
@@ -237,16 +240,24 @@ final class Recorder: NSObject, ObservableObject {
                 }
             }
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let anchor = Anchor()
+            if let device = micID.flatMap({ AVCaptureDevice(uniqueID: $0) }) {
+                micFile = try AudioFile(url: dir.appending(path: "mic.wav"), mic: device, anchor: anchor) { error in
+                    Task { @MainActor in self.fail(error) }
+                }
+            }
             for (n, (i, display)) in displays.enumerated() {
                 let unit = area.display == nil ? nil : area.unitRect
-                // The mic is captured once, on the first stream, into its own file.
-                let mic = n == 0 ? try micWriter(url: dir.appending(path: "mic.wav")) : nil
+                // The mic is captured once, on the first stream.
                 try makeStream(display: display, area: unit, excluding: hidden.count == overlayIDs.count ? hidden : [],
-                               mic: mic, url: dir.appending(path: "screen\(i).mov"))
+                               mic: n == 0 ? micFile : nil, anchor: anchor, url: dir.appending(path: "screen\(i).mov"))
             }
-            if appSound, let first = displays.first?.element {
-                try makeSoundStream(display: first, content: content)
+            let first = displays[0].element
+            if startCountdown > 0 { try makeToneStream(display: first, content: content) }
+            for id in appSoundApps {
+                try makeAppStream(id, display: first, content: content, dir: dir, anchor: anchor)
             }
+            watchLaunches(display: first)
             if let camera {
                 status = "Starting camera…"
                 unfinished += 1
@@ -260,7 +271,7 @@ final class Recorder: NSObject, ObservableObject {
                 }
             }
             // The sound first, so it is there from the first frame.
-            for stream in [soundStream].compactMap({ $0 }) + streams {
+            for stream in audioStreams + streams {
                 try await stream.startCapture()
                 started.append(stream)
             }
@@ -308,13 +319,25 @@ final class Recorder: NSObject, ObservableObject {
         countdown?.cancel()
         countdown = nil
         status = "Saving…"
+        let end = CMClockGetTime(CMClockGetHostTimeClock())  // the clock ScreenCaptureKit stamps with
         camera?.stop()
+        appWatch?.cancel()
+        appWatch = nil
         // The sound last, so it runs to the last frame.
-        for stream in streams + [soundStream].compactMap({ $0 }) where !stoppedStreams.contains(ObjectIdentifier(stream)) {
+        for stream in streams + audioStreams where !stoppedStreams.contains(ObjectIdentifier(stream)) {
             try? await stream.stopCapture()
         }
         for writer in writers {
             do { try await writer.finish() } catch { fail(error) }
+        }
+        if let micFile {
+            do {
+                if try await !micFile.finish(at: end) { fail(RecError("mic.wav got no sound from the microphone.")) }
+            } catch { fail(error) }
+        }
+        for app in appStreams {
+            // An app that never ran during the recording has no file.
+            do { _ = try await app.finish(at: end) } catch { fail(error) }
         }
         if unfinished > 0 {
             // Never wait forever for the camera's "finished" callback — that blocks the next
@@ -355,14 +378,9 @@ final class Recorder: NSObject, ObservableObject {
     /// A length in the file, even (the encoders want even sizes).
     static func pixels(_ points: CGFloat, _ perPoint: Double) -> Int { Int((points * perPoint).rounded()) & ~1 }
 
-    private func micWriter(url: URL) throws -> MicWriter? {
-        guard let device = micID.flatMap({ AVCaptureDevice(uniqueID: $0) }) else { return nil }
-        return try MicWriter(url: url, device: device) { error in Task { @MainActor in self.fail(error) } }
-    }
-
     /// `mic`: this stream also captures the mic, into that file.
-    private func makeStream(display: SCDisplay, area: CGRect?, excluding: [SCWindow], mic: MicWriter?,
-                            url: URL) throws {
+    private func makeStream(display: SCDisplay, area: CGRect?, excluding: [SCWindow], mic: AudioFile?,
+                            anchor: Anchor, url: URL) throws {
         let crop = area.map { RecordArea.scale($0, to: CGSize(width: display.width, height: display.height)).integral }
         let filter = SCContentFilter(display: display, excludingWindows: excluding)
         let cfg = SCStreamConfiguration()
@@ -386,7 +404,7 @@ final class Recorder: NSObject, ObservableObject {
         }
 
         let writer = try ScreenWriter(url: url, width: cfg.width, height: cfg.height, codec: codec,
-                                      quality: quality, mic: mic, appSound: appSound, area: area) { error in
+                                      quality: quality, mic: mic, anchor: anchor, tones: startCountdown > 0, area: area) { error in
             Task { @MainActor in self.fail(error) }
         }
         let stream = SCStream(filter: filter, configuration: cfg, delegate: self)
@@ -396,27 +414,110 @@ final class Recorder: NSObject, ObservableObject {
         writers.append(writer)
     }
 
-    /// One audio-only stream for the apps' sound, handed to every screen writer. Its own filter
-    /// leaves out the mic monitors' sound, which the screen streams' filters (they leave out our
-    /// overlay windows) cannot do as well.
-    private func makeSoundStream(display: SCDisplay, content: SCShareableContent) throws {
-        let monitors = content.applications.filter { Self.micMonitors.contains($0.bundleIdentifier) }
-        let filter = SCContentFilter(display: display, excludingApplications: monitors, exceptingWindows: [])
+    private var audioStreams: [SCStream] { [toneStream].compactMap { $0 } + appStreams.map(\.stream) }
+
+    /// An audio-only stream: no picture worth the name, the sound of the apps in `filter`.
+    nonisolated static func soundStream(_ filter: SCContentFilter, delegate: SCStreamDelegate) -> SCStream {
         let cfg = SCStreamConfiguration()
         cfg.width = 2
         cfg.height = 2
         cfg.minimumFrameInterval = CMTime(value: 1, timescale: 1)
         cfg.capturesAudio = true
-        // Our own count beeps too: digital and at full level here, an exact marker in every
-        // screen file (mic.wav hears them only faintly from the speakers).
         cfg.excludesCurrentProcessAudio = false
-        cfg.sampleRate = Self.appSoundRate
+        cfg.sampleRate = appSoundRate
         cfg.channelCount = 2
-        let sound = AppSound(writers: writers)
-        let stream = SCStream(filter: filter, configuration: cfg, delegate: self)
-        try stream.addStreamOutput(sound, type: .audio, sampleHandlerQueue: sound.queue)
-        self.sound = sound
-        soundStream = stream
+        return SCStream(filter: filter, configuration: cfg, delegate: delegate)
+    }
+
+    /// Our own sound only (the count beeps and "go"), into every screen file: digital and at full
+    /// level, an exact sync marker (mic.wav hears them only faintly from the speakers).
+    private func makeToneStream(display: SCDisplay, content: SCShareableContent) throws {
+        let me = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
+        let stream = Self.soundStream(SCContentFilter(display: display, including: me, exceptingWindows: []), delegate: self)
+        let fanout = ToneFanout(writers: writers)
+        try stream.addStreamOutput(fanout, type: .audio, sampleHandlerQueue: fanout.queue)
+        toneOutput = fanout
+        toneStream = stream
+    }
+
+    private func makeAppStream(_ id: String, display: SCDisplay, content: SCShareableContent, dir: URL,
+                               anchor: Anchor) throws {
+        let name = Self.appName(id).map { $0.isLetter || $0.isNumber ? $0 : "-" }
+        let file = try AudioFile(url: dir.appending(path: "app-\(String(name)).wav"), rate: Double(Self.appSoundRate),
+                                 channels: 2, anchor: anchor) { error in Task { @MainActor in self.fail(error) } }
+        let filter = SCContentFilter(display: display, including: Self.running(id, in: content), exceptingWindows: [])
+        let app = AppSoundStream(id: id, file: file, stream: Self.soundStream(filter, delegate: self))
+        app.pids = Set(Self.running(id, in: content).map(\.processID))
+        try app.stream.addStreamOutput(app, type: .audio, sampleHandlerQueue: app.queue)
+        appStreams.append(app)
+    }
+
+    /// The running app with this bundle id, and its helpers (com.example.App.helper).
+    nonisolated static func running(_ id: String, in content: SCShareableContent) -> [SCRunningApplication] {
+        content.applications.filter { $0.bundleIdentifier == id || $0.bundleIdentifier.hasPrefix(id + ".") }
+    }
+
+    /// A chosen app that opens (or reopens) during the recording records from then on: its stream
+    /// gets a new filter. Checked once a second; no launch notification comes for every kind of app.
+    private func watchLaunches(display: SCDisplay) {
+        guard !appStreams.isEmpty else { return }
+        nonisolated(unsafe) let display = display
+        appWatch = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, self.isRecording else { continue }
+                for app in self.appStreams {
+                    let pids = Self.pids(app.id)
+                    if !pids.isEmpty, pids != app.pids {
+                        app.pids = pids
+                        await app.follow(display: display)
+                    }
+                }
+            }
+        }
+    }
+
+    /// The processes of an app and its helpers, by bundle id.
+    static func pids(_ id: String) -> Set<pid_t> {
+        Set(NSWorkspace.shared.runningApplications
+            .filter { $0.bundleIdentifier.map { $0 == id || $0.hasPrefix(id + ".") } ?? false }
+            .map(\.processIdentifier))
+    }
+
+    static func appName(_ id: String) -> String {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) {
+            return FileManager.default.displayName(atPath: url.path(percentEncoded: false))
+                .replacingOccurrences(of: ".app", with: "")
+        }
+        return NSRunningApplication.runningApplications(withBundleIdentifier: id).first?.localizedName ?? id
+    }
+
+    /// What the app sound lists offer: the chosen apps (running or not) and every running app.
+    var soundAppChoices: [(id: String, name: String)] {
+        let running = NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular && $0.bundleIdentifier != Bundle.main.bundleIdentifier }
+            .compactMap(\.bundleIdentifier)
+        return Array(Set(appSoundApps + running)).map { ($0, Self.appName($0)) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    func soundApp(_ id: String) -> Binding<Bool> {
+        Binding(get: { self.appSoundApps.contains(id) }, set: { on in
+            self.appSoundApps.removeAll { $0 == id }
+            if on { self.appSoundApps.append(id) }
+        })
+    }
+
+    /// Choose an app that is not running from /Applications.
+    func chooseSoundApp() {
+        let panel = NSOpenPanel()
+        panel.directoryURL = URL(filePath: "/Applications")
+        panel.allowedContentTypes = [.application]
+        panel.message = "Choose an app whose sound to record"
+        NSApp.activate()
+        guard panel.runModal() == .OK, let url = panel.url, let id = Bundle(url: url)?.bundleIdentifier,
+              !appSoundApps.contains(id) else { return }
+        appSoundApps.append(id)
     }
 
     private func teardown() async {
@@ -424,8 +525,12 @@ final class Recorder: NSObject, ObservableObject {
         watchdog?.cancel()
         watchdog = nil
         writers.removeAll()
-        soundStream = nil
-        sound = nil
+        toneStream = nil
+        toneOutput = nil
+        appStreams.removeAll()
+        micFile = nil
+        appWatch?.cancel()
+        appWatch = nil
         stoppedStreams.removeAll()
         cameraFile = nil
         streams.removeAll()
@@ -499,15 +604,58 @@ extension Recorder: SCStreamDelegate {
     }
 }
 
-/// Hands the sound stream's samples to every screen writer.
-private final class AppSound: NSObject, SCStreamOutput, @unchecked Sendable {
-    let queue = DispatchQueue(label: "AppSound", qos: .userInteractive)
+/// Hands the tone stream's samples to every screen writer.
+private final class ToneFanout: NSObject, SCStreamOutput, @unchecked Sendable {
+    let queue = DispatchQueue(label: "Tones", qos: .userInteractive)
     private let writers: [ScreenWriter]
     init(writers: [ScreenWriter]) { self.writers = writers }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer buffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .audio, buffer.isValid else { return }
-        writers.forEach { $0.appendAppSound(buffer) }
+        writers.forEach { $0.appendTones(buffer) }
+    }
+}
+
+/// One chosen app's sound into its own file. The file is touched only on `queue`.
+private final class AppSoundStream: NSObject, SCStreamOutput, @unchecked Sendable {
+    let id: String
+    let stream: SCStream
+    /// The processes its filter holds; read and written on the main actor only.
+    var pids: Set<pid_t> = []
+    let queue = DispatchQueue(label: "AppSound", qos: .userInteractive)
+    private let file: AudioFile
+
+    init(id: String, file: AudioFile, stream: SCStream) {
+        self.id = id
+        self.file = file
+        self.stream = stream
+    }
+
+    func stream(_ stream: SCStream, didOutputSampleBuffer buffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        guard type == .audio else { return }
+        file.append(buffer)
+    }
+
+    /// The app (re)opened: point the stream at the new process.
+    func follow(display: SCDisplay) async {
+        for _ in 0..<40 {
+            if let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false) {
+                let apps = Recorder.running(id, in: content)
+                if !apps.isEmpty {
+                    try? await stream.updateContentFilter(SCContentFilter(display: display, including: apps, exceptingWindows: []))
+                    Recorder.log.notice("app sound follows \(self.id, privacy: .public)")
+                    return
+                }
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        Recorder.log.error("app sound: \(self.id, privacy: .public) opened but is not capturable")
+    }
+
+    /// After the stream stopped: no more samples come, so the queue is empty after this sync.
+    func finish(at end: CMTime) async throws -> Bool {
+        queue.sync {}
+        return try await file.finish(at: end)
     }
 }
 
