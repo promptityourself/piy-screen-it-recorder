@@ -6,9 +6,9 @@ A small macOS menu bar app that records **every display to its own file**, and y
 microphone to a file of its own. Drop the files into Final Cut Pro and sync them on the audio.
 
 - **Setup bar** (⌃⌥⇧R or menu → **Start Recording…**), as in QuickTime: the current area shows
-  on screen with the rest dimmed, and a bar at the bottom chooses the display, Full / Left / Right /
-  Selected, and the options (mic, camera, countdown, the apps whose sound to record, click ripples). Drag the area to move
-  or resize it. Enter, **Record** or ⌃⌥⇧R again starts; Esc closes. Settings → Recording turns the
+  on screen with the rest dimmed, and a dark bar at the bottom has the display, Full / Left / Right /
+  Selected, then one pop-up per option, each showing its value: mic, app sound, camera, countdown
+  and click ripples. Drag the area to move or resize it. Enter, **Record** or ⌃⌥⇧R again starts; Esc closes. Settings → Recording turns the
   bar off, and then ⌃⌥⇧R starts at once.
 - One `.mov` per display, 30 fps. Choose in **Settings → Recording**:
   - **Quality** Standard / High (default) / Maximum.
@@ -26,8 +26,8 @@ microphone to a file of its own. Drop the files into Final Cut Pro and sync them
 - **Every sound has its own file**, so you edit channel by channel:
   - `mic.wav`: the mic (uncompressed 24-bit). It never goes in a screen file.
   - `app-<name>.wav`: the sound of one app you ticked (uncompressed 24-bit stereo), for example
-    `app-WhatsApp.wav`. Tick apps in the setup bar (Options → App Sound) or in Settings →
-    App sound; none is ticked at first, so no app sound records. The list shows the running apps
+    `app-WhatsApp.wav`. Tick apps in the setup bar's sound pop-up or in Settings → Sound
+    (a list you can search); none is ticked at first, so no app sound records. The list shows the running apps
     and the ones you ticked before; **Choose App…** adds one that is not running. An app that opens
     during the recording records from then on (within about a second), and the time it was not
     running is silence, so the file stays in sync.

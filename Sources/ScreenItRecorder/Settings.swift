@@ -26,7 +26,7 @@ enum HostedWindow {
 
 @MainActor
 enum SettingsWindow {
-    enum Tab: Hashable { case recording, colour, shortcuts, permissions }
+    enum Tab: Hashable { case recording, sound, colour, shortcuts, permissions }
 
     /// The selected tab, so the menu can open Settings on Permissions.
     final class Selection: ObservableObject {
@@ -46,13 +46,13 @@ struct SettingsView: View {
     var body: some View {
         TabView(selection: $selection.tab) {
             RecordingTab().tabItem { Text("Recording") }.tag(SettingsWindow.Tab.recording)
+            SoundTab().tabItem { Text("Sound") }.tag(SettingsWindow.Tab.sound)
             ColourTab().tabItem { Text("Screen Colour") }.tag(SettingsWindow.Tab.colour)
             ShortcutsTab().tabItem { Text("Shortcuts") }.tag(SettingsWindow.Tab.shortcuts)
             PermissionsTab().tabItem { Text("Permissions") }.tag(SettingsWindow.Tab.permissions)
         }
         .padding()
-        .frame(width: 560)
-        .fixedSize(horizontal: false, vertical: true)
+        .frame(width: 560, height: 640)  // a long tab scrolls instead of growing off the screen
     }
 }
 
@@ -62,10 +62,6 @@ private struct RecordingTab: View {
     var body: some View {
         Form {
             Section {
-                Picker("Microphone", selection: $rec.micID) {
-                    Text("None").tag(String?.none)
-                    ForEach(rec.mics, id: \.uniqueID) { Text($0.localizedName).tag(Optional($0.uniqueID)) }
-                }
                 Picker("Camera", selection: $rec.cameraID) {
                     let cams = CameraRecorder.devices
                     let labels = CameraRecorder.labels(for: cams)
@@ -101,19 +97,6 @@ private struct RecordingTab: View {
                 if rec.isRecording {
                     Text("Stop the recording to change these.").font(.caption).foregroundStyle(.secondary)
                 }
-            }
-            .disabled(rec.isRecording)
-
-            Section {
-                ForEach(rec.soundAppChoices, id: \.id) { Toggle($0.name, isOn: rec.soundApp($0.id)) }
-                Button("Choose an App That Is Not Running…") { rec.chooseSoundApp() }
-            } header: {
-                Text("App sound")
-            } footer: {
-                Text("Each ticked app records to its own file, app-<name>.wav, next to mic.wav. None is "
-                    + "ticked at first. An app that is not running records from when it opens. The screen "
-                    + "files have only the countdown tones, to sync on.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
             .disabled(rec.isRecording)
 
@@ -156,6 +139,87 @@ private struct RecordingTab: View {
         panel.directoryURL = rec.folder
         if panel.runModal() == .OK, let url = panel.url { rec.folder = url }
     }
+}
+
+/// The mic and the apps whose sound to record, each to its own file.
+private struct SoundTab: View {
+    @ObservedObject private var rec = Recorder.shared
+    @ObservedObject private var search = SearchText.shared
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("Microphone", selection: $rec.micID) {
+                    Text("None").tag(String?.none)
+                    ForEach(rec.mics, id: \.uniqueID) { Text($0.localizedName).tag(Optional($0.uniqueID)) }
+                }
+            } footer: {
+                Text("Records to mic.wav, never into a screen file. The camera file has it too.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section {
+                TextField("Search", text: $search.text, prompt: Text("Search apps"))
+                    .textFieldStyle(.roundedBorder)
+                    .labelsHidden()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(apps, id: \.id) { app in
+                            Toggle(isOn: rec.soundApp(app.id)) {
+                                HStack(spacing: 8) {
+                                    Image(nsImage: Self.icon(app.id)).resizable().frame(width: 20, height: 20)
+                                    Text(app.name)
+                                }
+                            }
+                            .toggleStyle(.checkbox)
+                            .padding(.vertical, 3)
+                        }
+                        if apps.isEmpty {
+                            Text("No app matches.").foregroundStyle(.secondary).padding(.vertical, 6)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 4)
+                }
+                .frame(height: 260)
+                HStack {
+                    Text(rec.appSoundApps.isEmpty ? "No app sound records."
+                         : "Records: " + rec.appSoundApps.map(Recorder.appName).sorted().joined(separator: ", "))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if !rec.appSoundApps.isEmpty { Button("Untick All") { rec.appSoundApps = [] } }
+                    Button("Choose App…") { rec.chooseSoundApp() }
+                }
+            } header: {
+                Text("App sound")
+            } footer: {
+                Text("Each ticked app records to its own file, app-<name>.wav. The list shows running apps "
+                    + "and the ones you ticked; Choose App… adds one that is not running. An app that opens "
+                    + "during the recording records from then on. The screen files have only the countdown "
+                    + "tones, to sync on.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .disabled(rec.isRecording)
+    }
+
+    private var apps: [(id: String, name: String)] {
+        let q = search.text.trimmingCharacters(in: .whitespaces)
+        return rec.soundAppChoices.filter { q.isEmpty || $0.name.localizedCaseInsensitiveContains(q) }
+    }
+
+    static func icon(_ id: String) -> NSImage {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: id)
+            .map { NSWorkspace.shared.icon(forFile: $0.path(percentEncoded: false)) }
+            ?? NSImage(systemSymbolName: "app", accessibilityDescription: nil)!
+    }
+}
+
+/// The Sound tab's search text (no @State without Xcode's macros).
+private final class SearchText: ObservableObject {
+    static let shared = SearchText()
+    @Published var text = ""
 }
 
 private struct AreaSection: View {

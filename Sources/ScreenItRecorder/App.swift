@@ -41,7 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let launch = CommandLine.arguments
         if let i = launch.firstIndex(of: "--settings") {
             let tabs: [String: SettingsWindow.Tab] = [
-                "recording": .recording, "colour": .colour, "shortcuts": .shortcuts, "permissions": .permissions,
+                "recording": .recording, "sound": .sound, "colour": .colour, "shortcuts": .shortcuts, "permissions": .permissions,
             ]
             let tab = i + 1 < launch.count ? tabs[launch[i + 1]] : nil
             MainActor.assumeIsolated { SettingsWindow.show(tab) }
