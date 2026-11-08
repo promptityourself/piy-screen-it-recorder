@@ -16,6 +16,7 @@ rm -rf "$APP" build/ScreenItRecorder.app build/AppIcon.iconset
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" build/AppIcon.iconset
 cp .build/release/ScreenItRecorder "$APP/Contents/MacOS/"
 cp Resources/Info.plist "$APP/Contents/"
+cp Resources/menubar.svg "$APP/Contents/Resources/"
 
 swift tools/make-icon.swift build/icon-1024.png
 for s in 16 32 128 256 512; do
