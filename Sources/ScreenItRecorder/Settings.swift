@@ -79,6 +79,10 @@ private struct RecordingTab: View {
                         }
                     }
                 }
+                Picker("Start countdown", selection: $rec.startCountdown) {
+                    ForEach(Countdown.choices, id: \.self) { Text($0 == 0 ? "Off" : "\($0) seconds").tag($0) }
+                }
+                Toggle("Record app sound as a second track", isOn: $rec.appSound)
                 Toggle("Hide desktop widgets while recording", isOn: $rec.hideWidgets)
                 LabeledContent("Saves to") {
                     VStack(alignment: .trailing) {

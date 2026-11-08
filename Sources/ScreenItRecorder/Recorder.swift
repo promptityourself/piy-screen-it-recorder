@@ -34,6 +34,16 @@ final class Recorder: NSObject, ObservableObject {
     @Published var cameraFPS: Int {
         didSet { UserDefaults.standard.set(cameraFPS, forKey: "cameraFPS") }
     }
+    /// Seconds of count beeps after the start, then a "go" tone; 0 = none. See Countdown.
+    @Published var startCountdown: Int {
+        didSet { UserDefaults.standard.set(startCountdown, forKey: "startCountdown") }
+    }
+    /// Record the apps' sound as a second track in each screen file.
+    @Published var appSound: Bool {
+        didSet { UserDefaults.standard.set(appSound, forKey: "appSound") }
+    }
+    nonisolated static let appSoundRate = 48_000
+    private var countdown: Task<Void, Never>?
     @Published var hideWidgets: Bool {
         didSet { UserDefaults.standard.set(hideWidgets, forKey: "hideWidgets") }
     }
@@ -96,6 +106,8 @@ final class Recorder: NSObject, ObservableObject {
     override init() {
         let d = UserDefaults.standard
         hideWidgets = d.object(forKey: "hideWidgets") as? Bool ?? true
+        startCountdown = d.object(forKey: "startCountdown") as? Int ?? 3
+        appSound = d.object(forKey: "appSound") as? Bool ?? true
         micID = d.string(forKey: "micID").map { $0.isEmpty ? nil : $0 }
             ?? AVCaptureDevice.default(for: .audio)?.uniqueID
         cameraID = d.string(forKey: "cameraID")  // off unless chosen
@@ -214,7 +226,17 @@ final class Recorder: NSObject, ObservableObject {
             watchForSystemStop()
             session = stamp
             let what = area.display == nil ? "\(streams.count) screens" : area.summary
-            status = "● Recording \(what)\(camera == nil ? "" : " + camera")"
+            let recording = "● Recording \(what)\(camera == nil ? "" : " + camera")"
+            status = recording
+            if startCountdown > 0 {
+                let seconds = startCountdown
+                countdown = Task {
+                    await Countdown.run(seconds) { left in
+                        guard self.isRecording else { return }
+                        self.status = left > 0 ? "● Recording — start talking after the go tone: \(left)" : recording
+                    }
+                }
+            }
         } catch {
             camera?.stop()
             for stream in started { try? await stream.stopCapture() }
@@ -227,6 +249,8 @@ final class Recorder: NSObject, ObservableObject {
         guard isRecording, !busy else { return }
         busy = true
         defer { busy = false }
+        countdown?.cancel()
+        countdown = nil
         status = "Saving…"
         camera?.stop()
         for stream in streams where !stoppedStreams.contains(ObjectIdentifier(stream)) {
@@ -289,14 +313,23 @@ final class Recorder: NSObject, ObservableObject {
             cfg.captureMicrophone = true
             cfg.microphoneCaptureDeviceID = micID
         }
+        if appSound {
+            cfg.capturesAudio = true
+            // Our own count beeps too: digital and at full level here, an exact marker in every
+            // screen file (the mic hears them only faintly from the speakers).
+            cfg.excludesCurrentProcessAudio = false
+            cfg.sampleRate = Self.appSoundRate
+            cfg.channelCount = 2
+        }
 
         let writer = try ScreenWriter(url: url, width: cfg.width, height: cfg.height, codec: codec,
-                                      quality: quality, mic: mic, area: area) { error in
+                                      quality: quality, mic: mic, appSound: appSound, area: area) { error in
             Task { @MainActor in self.fail(error) }
         }
         let stream = SCStream(filter: filter, configuration: cfg, delegate: self)
         try stream.addStreamOutput(writer, type: .screen, sampleHandlerQueue: writer.queue)
         if mic != nil { try stream.addStreamOutput(writer, type: .microphone, sampleHandlerQueue: writer.queue) }
+        if appSound { try stream.addStreamOutput(writer, type: .audio, sampleHandlerQueue: writer.queue) }
         streams.append(stream)
         writers.append(writer)
     }

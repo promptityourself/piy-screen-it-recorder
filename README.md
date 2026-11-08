@@ -18,6 +18,13 @@ microphone in each file. Drop the files into Final Cut Pro and sync them on the 
   display at Native is 2560×2880. The file keeps the display's number (`screen1.mov` is still
   display 1) and stores its area, so Playback puts it back on that part of that display and the rest
   of the display stays in view.
+- **Audio tracks** in each screen file: track 1 is the mic (`Microphone`), track 2 is the sound of
+  your apps (`App sound`, stereo; Settings → Recording turns it off). Use headphones, or the mic
+  also hears the app sound from the speakers.
+- **Start countdown** (Settings → Recording: Off / 3 (default) / 5 / 10 s): the recording starts at
+  once, then beeps once a second and plays a "go" tone. Start talking after "go". The tones are pure
+  sines for an editor or an agent to find: each count is 880 Hz for 0.12 s, "go" is 1760 Hz for
+  0.4 s. They are at full level on the app-sound track, and fainter on the mic from the speakers.
 - The same mic track is in every file, so **Synchronize Clips** in FCP lines them up. A clap at the start is a good backup.
 - **Camera (optional):** choose a camera in the menu (default **None**). It records 1080p HEVC at 30 fps (matches the screens); **Camera Frame Rate** offers every rate the camera supports, e.g. 50/60 for slow motion
   with the same mic track to `camera.mov`. The camera starts first, so it never misses the clap.

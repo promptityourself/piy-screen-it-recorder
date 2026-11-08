@@ -60,6 +60,8 @@ final class ScreenWriter: NSObject, SCStreamOutput, @unchecked Sendable {
     private let writer: AVAssetWriter
     private let video: AVAssetWriterInput
     private let audio: AVAssetWriterInput?
+    /// The apps' sound (ScreenCaptureKit's system audio), a second track after the mic's.
+    private let appAudio: AVAssetWriterInput?
     private var startTime: CMTime?
     /// The last complete frame. ScreenCaptureKit sends a new image only when the screen changes,
     /// so a still screen would leave the video track short of the audio (measured: 0.87 s of
@@ -79,7 +81,7 @@ final class ScreenWriter: NSObject, SCStreamOutput, @unchecked Sendable {
     static let areaID = AVMetadataItem.identifier(forKey: areaKey, keySpace: .quickTimeMetadata)!
 
     init(url: URL, width: Int, height: Int, codec: Codec, quality: Quality, mic: AVCaptureDevice?,
-         area: CGRect?, onError: @escaping (Error) -> Void) throws {
+         appSound: Bool, area: CGRect?, onError: @escaping (Error) -> Void) throws {
         self.url = url
         self.onError = onError
         writer = try AVAssetWriter(outputURL: url, fileType: .mov)
@@ -126,13 +128,36 @@ final class ScreenWriter: NSObject, SCStreamOutput, @unchecked Sendable {
                 AVEncoderBitRateKey: 192_000,
             ])
             input.expectsMediaDataInRealTime = true
+            input.metadata = [Self.trackName("Microphone")]
             guard writer.canAdd(input) else { throw RecError("Cannot write the microphone audio") }
             writer.add(input)
             audio = input
         } else {
             audio = nil
         }
+        if appSound {
+            let input = AVAssetWriterInput(mediaType: .audio, outputSettings: [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: Recorder.appSoundRate,
+                AVNumberOfChannelsKey: 2,
+                AVEncoderBitRateKey: 256_000,
+            ])
+            input.expectsMediaDataInRealTime = true
+            input.metadata = [Self.trackName("App sound")]
+            guard writer.canAdd(input) else { throw RecError("Cannot write the app sound") }
+            writer.add(input)
+            appAudio = input
+        } else {
+            appAudio = nil
+        }
         super.init()
+    }
+
+    private static func trackName(_ name: String) -> AVMetadataItem {
+        let item = AVMutableMetadataItem()
+        item.identifier = .quickTimeUserDataTrackName
+        item.value = name as NSString
+        return item
     }
 
     /// Seconds since the stream last delivered anything (a frame, an idle frame, or audio).
@@ -168,6 +193,10 @@ final class ScreenWriter: NSObject, SCStreamOutput, @unchecked Sendable {
             guard let audio, let startTime, buffer.presentationTimeStamp >= startTime,
                   audio.isReadyForMoreMediaData else { return }
             if !audio.append(buffer) { report() }
+        case .audio:
+            guard let appAudio, let startTime, buffer.presentationTimeStamp >= startTime,
+                  appAudio.isReadyForMoreMediaData else { return }
+            if !appAudio.append(buffer) { report() }
         default:
             break
         }
@@ -204,6 +233,7 @@ final class ScreenWriter: NSObject, SCStreamOutput, @unchecked Sendable {
         }
         video.markAsFinished()
         audio?.markAsFinished()
+        appAudio?.markAsFinished()
         await writer.finishWriting()
         if writer.status != .completed {
             throw writer.error ?? RecError("\(url.lastPathComponent) did not save.")
