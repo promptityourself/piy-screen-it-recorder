@@ -39,7 +39,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in Playback.shared.restart() }
         }
 
-        // `--settings [recording|colour|shortcuts|permissions]`, `--about`, `--playback`: open that window.
+        // `--settings [recording|colour|shortcuts|permissions]`, `--about`, `--playback`,
+        // `--select-area`: open that window.
         let launch = CommandLine.arguments
         if let i = launch.firstIndex(of: "--settings") {
             let tabs: [String: SettingsWindow.Tab] = [
@@ -49,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             MainActor.assumeIsolated { SettingsWindow.show(tab) }
         }
         if launch.contains("--about") { MainActor.assumeIsolated { About.show() } }
+        if launch.contains("--select-area") { MainActor.assumeIsolated { AreaPicker.show() } }
         if CommandLine.arguments.contains("--playback") { MainActor.assumeIsolated { PlaybackPanel.show() } }
 
         // `--test <seconds> [--green] [--clicks]`: record (optionally over green, with a click ripple
@@ -117,6 +119,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+/// Record → All displays, or a display in full / left half / right half / the selected area.
+struct AreaMenu: View {
+    @ObservedObject private var area = RecordArea.shared
+
+    var body: some View {
+        Menu("Record: \(area.summary)") {
+            Toggle("All Displays", isOn: choice(nil, .full))
+            ForEach(RecordArea.displays(), id: \.uuid) { d in
+                Section(d.name) {
+                    ForEach([RecordArea.Preset.full, .left, .right]) { p in
+                        Toggle(p.label, isOn: choice(d.uuid, p))
+                    }
+                    if area.display == d.uuid, area.preset == .custom {
+                        Toggle(RecordArea.Preset.custom.label, isOn: choice(d.uuid, .custom))
+                    }
+                }
+            }
+            Divider()
+            Button("Select Area…") { AreaPicker.show() }
+        }
+    }
+
+    private func choice(_ uuid: String?, _ preset: RecordArea.Preset) -> Binding<Bool> {
+        Binding(get: { area.display == uuid && (uuid == nil || area.preset == preset) },
+                set: { if $0 { area.choose(display: uuid, preset) } })
+    }
+}
+
 struct MenuView: View {
     @EnvironmentObject var rec: Recorder
     @EnvironmentObject var green: GreenScreen
@@ -130,6 +160,7 @@ struct MenuView: View {
         Button(rec.isRecording ? "Stop Recording (⌃⌥⇧R)" : "Start Recording (⌃⌥⇧R)") {
             Task { rec.isRecording ? await rec.stop() : await rec.start() }
         }
+        AreaMenu().disabled(rec.isRecording)
         Button(green.isOn ? "\(green.shade.family) Screen Off (⌃⌥G / Esc)" : "\(green.shade.family) Screen On (⌃⌥G)") {
             green.toggle()
         }

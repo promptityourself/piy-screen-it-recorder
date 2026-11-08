@@ -123,6 +123,7 @@ private struct RecordingTab: View {
             }
             .disabled(rec.isRecording)
 
+            AreaSection()
             ClickSection()
         }
         .formStyle(.grouped)
@@ -137,6 +138,37 @@ private struct RecordingTab: View {
         panel.canCreateDirectories = true
         panel.directoryURL = rec.folder
         if panel.runModal() == .OK, let url = panel.url { rec.folder = url }
+    }
+}
+
+private struct AreaSection: View {
+    @ObservedObject private var area = RecordArea.shared
+    @ObservedObject private var rec = Recorder.shared
+
+    var body: some View {
+        Section {
+            Picker("Display", selection: Binding(get: { area.display }, set: { area.choose(display: $0, area.preset) })) {
+                Text("All displays").tag(String?.none)
+                ForEach(RecordArea.displays(), id: \.uuid) { Text($0.name).tag(Optional($0.uuid)) }
+                if let d = area.display, !RecordArea.displays().contains(where: { $0.uuid == d }) {
+                    Text("Not connected").tag(Optional(d))
+                }
+            }
+            Picker("Area", selection: $area.preset) {
+                ForEach(RecordArea.Preset.allCases.filter { $0 != .custom || area.custom != nil }) { Text($0.label).tag($0) }
+            }
+            .disabled(area.display == nil)
+            LabeledContent("Your own area") {
+                Button("Select Area…") { AreaPicker.show() }
+            }
+        } header: {
+            Text("What to record")
+        } footer: {
+            Text("All displays records each display in full, to its own file. One display records only "
+                + "that display, in full, one half, or an area you drag with Select Area. The menu has the same choices.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .disabled(rec.isRecording)
     }
 }
 

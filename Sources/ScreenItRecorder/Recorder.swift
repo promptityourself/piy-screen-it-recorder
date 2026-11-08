@@ -78,9 +78,11 @@ final class Recorder: NSObject, ObservableObject {
     private var watchdog: Task<Void, Never>?
     private var deviceObservers: [NSObjectProtocol] = []
 
-    /// Every display together, at the measured rate of the chosen settings.
+    /// Every recorded display (or part of one) together, at the measured rate of the chosen settings.
     var bytesPerSecond: Double {
-        MeasuredRate.mbps(codec, resolution, quality) * 1_000_000 / 8 * Double(max(1, NSScreen.screens.count))
+        let area = RecordArea.shared
+        let displays = area.display == nil ? Double(max(1, NSScreen.screens.count)) : area.fraction
+        return MeasuredRate.mbps(codec, resolution, quality) * 1_000_000 / 8 * displays
     }
 
     private var isDefaultFolder: Bool { folder.standardizedFileURL == Self.defaultFolder.standardizedFileURL }
@@ -175,9 +177,21 @@ final class Recorder: NSObject, ObservableObject {
             awake = ProcessInfo.processInfo.beginActivity(
                 options: [.idleDisplaySleepDisabled, .userInitiated], reason: "Recording screens")
 
+            // screen<i> keeps the display's place in ScreenCaptureKit's order even when only one
+            // display records, so Playback puts the file back on that display.
+            let area = RecordArea.shared
+            var displays = Array(content.displays.enumerated())
+            if let uuid = area.display {
+                displays = displays.filter { RecordArea.uuid($0.element.displayID) == uuid }
+                guard !displays.isEmpty else {
+                    throw RecError("The display chosen for the recording area is not connected. Choose "
+                        + "another one in the menu → Record.")
+                }
+            }
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            for (i, display) in content.displays.enumerated() {
-                try makeStream(display: display, url: dir.appending(path: "screen\(i).mov"))
+            for (i, display) in displays {
+                let crop = area.display == nil ? nil : area.rect(in: CGSize(width: display.width, height: display.height))
+                try makeStream(display: display, crop: crop, url: dir.appending(path: "screen\(i).mov"))
             }
             if let camera {
                 status = "Starting camera…"
@@ -199,7 +213,8 @@ final class Recorder: NSObject, ObservableObject {
             isRecording = true
             watchForSystemStop()
             session = stamp
-            status = "● Recording \(streams.count) screens\(camera == nil ? "" : " + camera")"
+            let what = area.display == nil ? "\(streams.count) screens" : area.summary
+            status = "● Recording \(what)\(camera == nil ? "" : " + camera")"
         } catch {
             camera?.stop()
             for stream in started { try? await stream.stopCapture() }
@@ -246,14 +261,19 @@ final class Recorder: NSObject, ObservableObject {
         NSWorkspace.shared.open(folder)
     }
 
-    private func makeStream(display: SCDisplay, url: URL) throws {
+    /// `crop`: the part of the display to record, in its points (origin top left); nil = all of it.
+    private func makeStream(display: SCDisplay, crop: CGRect?, url: URL) throws {
         let filter = SCContentFilter(display: display, excludingWindows: [])
         let cfg = SCStreamConfiguration()
         // Native = every physical pixel (5120×2880 on a Studio Display); 1440p = 2560 wide.
         let native = Int((Double(display.width) * Double(filter.pointPixelScale)).rounded())
-        let width = resolution == .native ? native : min(Self.targetWidth, native)
-        cfg.width = width & ~1
-        cfg.height = (width * display.height / display.width) & ~1
+        let fullWidth = resolution == .native ? native : min(Self.targetWidth, native)
+        // A crop keeps the pixel density of the whole display: half a display is half as wide.
+        let perPoint = Double(fullWidth) / Double(display.width)
+        let source = crop ?? CGRect(x: 0, y: 0, width: display.width, height: display.height)
+        if let crop { cfg.sourceRect = crop }
+        cfg.width = Int((source.width * perPoint).rounded()) & ~1
+        cfg.height = Int((source.height * perPoint).rounded()) & ~1
         cfg.minimumFrameInterval = CMTime(value: 1, timescale: Self.fps)
         cfg.showsCursor = true
         // Capture in sRGB, not the display's P3, so pixels match the file's BT.709 tag

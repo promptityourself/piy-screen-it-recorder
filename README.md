@@ -11,6 +11,10 @@ microphone in each file. Drop the files into Final Cut Pro and sync them on the 
   - **Codec** HEVC (default, small files) or ProRes 422 LT / 422 / HQ (smooth editing in FCP, very large files).
   Settings shows the size per hour. Measured with moving content: High HEVC 1440p is about 6 GB per
   hour for each display; Maximum ProRes Native is about 210 GB.
+- **What to record** (menu → **Record**, or Settings → Recording): all displays (default), or one
+  display in full, its left half or its right half. **Select Area…** dims every display: drag a
+  rectangle on one of them to record only that area. A half of a 5K display at Native is 2560×2880.
+  The file keeps the display's number (`screen1.mov` is still display 1), so Playback puts it back there.
 - The same mic track is in every file, so **Synchronize Clips** in FCP lines them up. A clap at the start is a good backup.
 - **Camera (optional):** choose a camera in the menu (default **None**). It records 1080p HEVC at 30 fps (matches the screens); **Camera Frame Rate** offers every rate the camera supports, e.g. 50/60 for slow motion
   with the same mic track to `camera.mov`. The camera starts first, so it never misses the clap.

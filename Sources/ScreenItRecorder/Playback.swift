@@ -94,7 +94,11 @@ final class Playback: ObservableObject {
         followsLatest = true
         let dirs = (try? FileManager.default.contentsOfDirectory(
             at: Recorder.shared.folder, includingPropertiesForKeys: nil)) ?? []
-        let newest = dirs.filter { FileManager.default.fileExists(atPath: $0.appending(path: "screen0.mov").path) }
+        // Any screen file: a recording of one display has only that display's screen<i>.mov.
+        let newest = dirs.filter { dir in
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path(percentEncoded: false))) ?? []
+            return names.contains { $0.hasPrefix("screen") && $0.hasSuffix(".mov") }
+        }
             .max { $0.lastPathComponent < $1.lastPathComponent }  // folder names are sortable timestamps
         guard let newest else {
             files = [:]
