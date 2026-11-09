@@ -11,19 +11,25 @@
   macros: no `@State`/`@Observable`, use `ObservableObject`). Signs with the local
   "ScreenItRecorder Local Signing" identity so TCC grants survive rebuilds — never fall back to
   ad hoc on mate's Mac: that silently revoked his Screen Recording grant mid-session (2026-10-11). Verify: `"build/Screen It Recorder.app/Contents/MacOS/ScreenItRecorder" --test <s>`
-  then `ffprobe` the files in `~/Movies/ScreenItRecorder/`. Delete test recordings after — they contain screen content.
+  then `ffprobe` the files in the save folder (`defaults read com.mergodon.ScreenItRecorder saveFolder`; unset = `~/Movies/ScreenItRecorder/`). Delete test recordings after — they contain screen content.
 - Run the `--test` binary from the terminal: TCC then uses the terminal's Screen Recording + Mic grant.
-  `open`-ing an ad-hoc build re-prompts after every rebuild.
 - `rec` / `widgets` are the ffmpeg CLI fallback; keep the folder and file names in step with the app. They have no quality, camera or click options; do not add them unless mate asks.
-- Tests share mate's prefs domain (`com.mergodon.ScreenItRecorder`). Read a key before a test
-  writes it and restore that value after — never `delete` or reset to a default. Never
-  `--install` (it quits the app) while his colour screen is up: check for layer-1000 windows first.
+- Tests share mate's prefs domain (`com.mergodon.ScreenItRecorder`), and he changes settings in the
+  live app between test runs. Around EVERY test command: `defaults export <domain> <snap>` before,
+  `defaults import <domain> <snap>` after, then delete each key not in the snapshot (`import`
+  merges). Never restore a key by hand from an earlier value. Never
+  `--install` (it quits the app) or run any on-screen check (`--test`, `--setup`, `--settings`) while
+  he records or his colour screen is up: list the app's windows first — layer 1002 = recording
+  overlay, layer 1000 = colour screen. A test window shows up in his recording.
 
 ## Cross-repo
 
 Never edit these from here; file issues with `gh issue create -R <owner/repo>`.
 
-- **`mergodon/promptityourself-web`** — the PIY site; owns this project's page
-  (`src/content/projects/`). The page is live at `https://promptityourself.com/projects/screen-it-recorder/` (#116 closed).
+- **`mergodon/promptityourself-web`** — the PIY site; owns this project's page. No page for this
+  app is live: `/projects/` redirects to `/products/`, and `/products/screen-it-recorder/` is 404.
+- **`mergodon/piy-cut-it-bro`** — reads each folder's `recording.json` (`RecordingInfo` in
+  `Tags.swift`, `"format": 1`) and the file layout. A breaking change bumps `format` and gets an
+  issue there (layout: piy-cut-it-bro#1).
 - **Distribution: App Store later (mate, 2026-10-11)** — no Developer ID / notarised download, and the
   site page says nothing about dev builds or signing. Blockers are tracked in this repo's issues.
