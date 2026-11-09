@@ -123,6 +123,7 @@ private struct RecordingTab: View {
             }
             .disabled(rec.isRecording)
 
+            TagSection()
             AreaSection()
             ClickSection()
         }
@@ -220,6 +221,43 @@ private struct SoundTab: View {
 private final class SearchText: ObservableObject {
     static let shared = SearchText()
     @Published var text = ""
+}
+
+/// The tags: tick the ones for the next recording, add, delete. Also during a recording.
+private struct TagSection: View {
+    @ObservedObject private var tags = Tags.shared
+
+    var body: some View {
+        Section {
+            ForEach(tags.known, id: \.self) { tag in
+                HStack {
+                    Toggle(tag, isOn: Binding(get: { tags.isOn(tag) }, set: { tags.set(tag, $0) }))
+                        .toggleStyle(.checkbox)
+                    Spacer()
+                    Button { tags.remove(tag) } label: { Image(systemName: "minus.circle") }
+                        .buttonStyle(.borderless)
+                        .help("Delete this tag (recordings keep it)")
+                }
+            }
+            HStack {
+                TextField("New tag", text: $tags.draft, prompt: Text("New tag, for example c001-fundamentals"))
+                    .labelsHidden()
+                    .onSubmit(add)
+                Button("Add", action: add).disabled(Tags.clean(tags.draft).isEmpty)
+            }
+        } header: {
+            Text("Tags")
+        } footer: {
+            Text("What a recording is about. The ticked tags go into recording.json in the recording's "
+                + "folder, and on the folder and its files as Finder tags. They stay ticked for the next "
+                + "recording. A change during a recording goes into it at once.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func add() {
+        if tags.add(tags.draft) { tags.draft = "" }
+    }
 }
 
 private struct AreaSection: View {

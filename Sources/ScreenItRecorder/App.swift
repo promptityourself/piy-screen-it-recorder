@@ -83,6 +83,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if args.contains("--green") { GreenScreen.shared.show() }
                 await rec.start()
                 print(rec.status)
+                // `--retag <a,b>`: set these active tags half-way, as a change during a recording.
+                if let r = args.firstIndex(of: "--retag"), r + 1 < args.count {
+                    try? await Task.sleep(for: .seconds(secs / 2))
+                    let wanted = args[r + 1].split(separator: ",").map(String.init)
+                    for tag in Tags.shared.known where !wanted.contains(tag) { Tags.shared.set(tag, false) }
+                    wanted.forEach { Tags.shared.add($0) }
+                    try? await Task.sleep(for: .seconds(secs / 2))
+                    await rec.stop()
+                    print(rec.status)
+                    exit(rec.lastError == nil ? 0 : 1)
+                }
                 if args.contains("--clicks") {
                     try? await Task.sleep(for: .seconds(1))
                     for s in NSScreen.screens { ClickHighlight.shared.ripple(at: NSPoint(x: s.frame.midX, y: s.frame.midY)) }
@@ -145,10 +156,25 @@ struct AreaMenu: View {
     }
 }
 
+/// A tick box per tag, and New Tag…: the setup bar and the menu bar menu.
+struct TagItems: View {
+    @ObservedObject private var tags = Tags.shared
+
+    var body: some View {
+        ForEach(tags.known, id: \.self) { tag in
+            Toggle(tag, isOn: Binding(get: { tags.isOn(tag) }, set: { tags.set(tag, $0) }))
+        }
+        if !tags.known.isEmpty { Divider() }
+        // After the menu closes: a modal alert inside a menu's action blocks its tracking.
+        Button("New Tag…") { DispatchQueue.main.async { tags.askNew() } }
+    }
+}
+
 struct MenuView: View {
     @EnvironmentObject var rec: Recorder
     @EnvironmentObject var green: GreenScreen
     @ObservedObject private var play = Playback.shared
+    @ObservedObject private var tags = Tags.shared
 
     var body: some View {
         Text(rec.status)
@@ -159,6 +185,8 @@ struct MenuView: View {
             Task { await rec.userToggle() }
         }
         AreaMenu().disabled(rec.isRecording)
+        // Also during a recording: a change goes into its recording.json at once.
+        Menu("Tags: \(tags.summary)") { TagItems() }
         Button(green.isOn ? "\(green.shade.family) Screen Off (⌃⌥G / Esc)" : "\(green.shade.family) Screen On (⌃⌥G)") {
             green.toggle()
         }

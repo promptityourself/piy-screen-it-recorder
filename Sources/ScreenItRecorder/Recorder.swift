@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import Combine
 import os
 import ScreenCaptureKit
 import SwiftUI
@@ -100,6 +101,12 @@ final class Recorder: NSObject, ObservableObject {
     private var cameraFile: URL?
     private var watchdog: Task<Void, Never>?
     private var deviceObservers: [NSObjectProtocol] = []
+    /// recording.json of the current recording, and its folder.
+    private var info: RecordingInfo?
+    private var sessionDir: URL?
+    private var startDate = Date.now
+    private var files: [RecordingInfo.File] = []  // filled while the streams are made
+    private var tagWatch: AnyCancellable?
 
     /// Every recorded display (or part of one) together, at the measured rate of the chosen settings.
     var bytesPerSecond: Double {
@@ -136,6 +143,10 @@ final class Recorder: NSObject, ObservableObject {
             deviceObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
                 MainActor.assumeIsolated { Recorder.shared.objectWillChange.send() }
             })
+        }
+        // Tags changed during a recording go into its metadata at once.
+        tagWatch = Tags.shared.$active.dropFirst().sink { tags in
+            MainActor.assumeIsolated { Recorder.shared.retag(tags) }
         }
     }
 
@@ -245,6 +256,7 @@ final class Recorder: NSObject, ObservableObject {
                 micFile = try AudioFile(url: dir.appending(path: "mic.wav"), mic: device, anchor: anchor) { error in
                     Task { @MainActor in self.fail(error) }
                 }
+                files.append(.init(file: "mic.wav", kind: "mic", source: device.localizedName))
             }
             for (n, (i, display)) in displays.enumerated() {
                 let unit = area.display == nil ? nil : area.unitRect
@@ -263,6 +275,9 @@ final class Recorder: NSObject, ObservableObject {
                 unfinished += 1
                 let url = dir.appending(path: "camera.mov")
                 cameraFile = url
+                files.append(.init(file: "camera.mov", kind: "camera",
+                                   source: cameraID.flatMap { CameraRecorder.labels(for: CameraRecorder.devices)[$0] } ?? "Camera",
+                                   fps: cameraFPS))
                 await camera.start(to: url) { error in
                     Task { @MainActor in
                         if let error { self.fail(error) }
@@ -279,6 +294,13 @@ final class Recorder: NSObject, ObservableObject {
             isRecording = true
             watchForSystemStop()
             session = stamp
+            sessionDir = dir
+            startDate = .now
+            info = RecordingInfo(app: RecordingInfo.appVersion,
+                                 macOS: ProcessInfo.processInfo.operatingSystemVersionString,
+                                 tags: Tags.shared.active, started: RecordingInfo.stamp(startDate),
+                                 countdown: startCountdown, files: files)
+            saveInfo(files: false)
             let what = area.display == nil ? "\(streams.count) screens" : area.summary
             let recording = "● Recording \(what)\(camera == nil ? "" : " + camera")"
             status = recording
@@ -356,8 +378,33 @@ final class Recorder: NSObject, ObservableObject {
             await withCheckedContinuation { pendingFinishes.append($0) }
             timeout.cancel()
         }
+        if var info {
+            let now = Date.now
+            info.ended = RecordingInfo.stamp(now)
+            info.seconds = (now.timeIntervalSince(startDate) * 100).rounded() / 100
+            // An app that never ran has no file; a failed camera may have none.
+            info.files = info.files.filter {
+                FileManager.default.fileExists(atPath: (sessionDir?.appending(path: $0.file).path(percentEncoded: false)) ?? "")
+            }
+            self.info = info
+            saveInfo(files: true)
+        }
         await teardown()
         if lastError == nil { status = "Saved: \(session ?? "")" }
+    }
+
+    /// The active tags changed: during a recording, into its recording.json and Finder tags.
+    private func retag(_ tags: [String]) {
+        guard isRecording, info != nil else { return }
+        info?.tags = tags
+        saveInfo(files: false)
+    }
+
+    private func saveInfo(files: Bool) {
+        guard let info, let sessionDir else { return }
+        do { try info.save(in: sessionDir, files: files) } catch {
+            fail(RecError("Could not save \(RecordingInfo.name): \(error.localizedDescription)"))
+        }
     }
 
     func openFolder() {
@@ -412,6 +459,12 @@ final class Recorder: NSObject, ObservableObject {
         if mic != nil { try stream.addStreamOutput(writer, type: .microphone, sampleHandlerQueue: writer.queue) }
         streams.append(stream)
         writers.append(writer)
+        files.append(.init(file: url.lastPathComponent, kind: "screen",
+                           source: RecordArea.uuid(display.displayID).flatMap { RecordArea.names()[$0] }
+                               ?? "Display \(display.displayID)",
+                           width: cfg.width, height: cfg.height, fps: Int(Self.fps),
+                           codec: codec == .hevc ? "hevc" : "prores",
+                           area: area.map { [$0.minX, $0.minY, $0.width, $0.height].map(Double.init) }))
     }
 
     private var audioStreams: [SCStream] { [toneStream].compactMap { $0 } + appStreams.map(\.stream) }
@@ -448,6 +501,7 @@ final class Recorder: NSObject, ObservableObject {
         let filter = SCContentFilter(display: display, including: Self.running(id, in: content), exceptingWindows: [])
         let app = AppSoundStream(id: id, file: file, stream: Self.soundStream(filter, delegate: self))
         app.pids = Set(Self.running(id, in: content).map(\.processID))
+        files.append(.init(file: file.url.lastPathComponent, kind: "app-sound", source: Self.appName(id), bundleID: id))
         try app.stream.addStreamOutput(app, type: .audio, sampleHandlerQueue: app.queue)
         appStreams.append(app)
     }
@@ -533,6 +587,9 @@ final class Recorder: NSObject, ObservableObject {
         appWatch = nil
         stoppedStreams.removeAll()
         cameraFile = nil
+        info = nil
+        sessionDir = nil
+        files.removeAll()
         streams.removeAll()
         started.removeAll()
         camera = nil

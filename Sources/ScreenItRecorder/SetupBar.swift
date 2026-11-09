@@ -56,6 +56,7 @@ private struct SetupBarView: View {
     @ObservedObject private var area = RecordArea.shared
     @ObservedObject private var rec = Recorder.shared
     @ObservedObject private var clicks = ClickHighlight.shared
+    @ObservedObject private var tags = Tags.shared
 
     var body: some View {
         VStack(spacing: 10) {
@@ -106,6 +107,13 @@ private struct SetupBarView: View {
             Divider().opacity(0.5)
             // How: one pop-up per option.
             HStack(spacing: 8) {
+                chip(tags.active.isEmpty ? "tag.slash" : "tag", tags.summary,
+                     help: "Tags: what the recording is about, saved in recording.json") {
+                    TagItems()
+                    Divider()
+                    Button("Edit Tags…") { open(.recording) }
+                }
+
                 chip(rec.micID == nil ? "mic.slash" : "mic", micName, help: "Microphone: records to mic.wav") {
                     Picker("Microphone", selection: $rec.micID) {
                         Text("None").tag(String?.none)
@@ -163,6 +171,7 @@ private struct SetupBarView: View {
         .environment(\.colorScheme, .dark)
         .onReceive(area.objectWillChange) { _ in DispatchQueue.main.async { SetupBar.fit() } }
         .onReceive(rec.objectWillChange) { _ in DispatchQueue.main.async { SetupBar.fit() } }
+        .onReceive(tags.objectWillChange) { _ in DispatchQueue.main.async { SetupBar.fit() } }
     }
 
     private var separator: some View { Divider().frame(height: 26) }
