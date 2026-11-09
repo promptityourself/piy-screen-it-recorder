@@ -26,7 +26,7 @@ enum HostedWindow {
 
 @MainActor
 enum SettingsWindow {
-    enum Tab: Hashable { case recording, sound, colour, shortcuts, permissions }
+    enum Tab: Hashable { case recording, sound, tags, colour, shortcuts, permissions }
 
     /// The selected tab, so the menu can open Settings on Permissions.
     final class Selection: ObservableObject {
@@ -47,6 +47,7 @@ struct SettingsView: View {
         TabView(selection: $selection.tab) {
             RecordingTab().tabItem { Text("Recording") }.tag(SettingsWindow.Tab.recording)
             SoundTab().tabItem { Text("Sound") }.tag(SettingsWindow.Tab.sound)
+            TagsTab().tabItem { Text("Tags") }.tag(SettingsWindow.Tab.tags)
             ColourTab().tabItem { Text("Screen Colour") }.tag(SettingsWindow.Tab.colour)
             ShortcutsTab().tabItem { Text("Shortcuts") }.tag(SettingsWindow.Tab.shortcuts)
             PermissionsTab().tabItem { Text("Permissions") }.tag(SettingsWindow.Tab.permissions)
@@ -123,7 +124,6 @@ private struct RecordingTab: View {
             }
             .disabled(rec.isRecording)
 
-            TagSection()
             AreaSection()
             ClickSection()
         }
@@ -224,35 +224,38 @@ private final class SearchText: ObservableObject {
 }
 
 /// The tags: tick the ones for the next recording, add, delete. Also during a recording.
-private struct TagSection: View {
+private struct TagsTab: View {
     @ObservedObject private var tags = Tags.shared
 
     var body: some View {
-        Section {
-            ForEach(tags.known, id: \.self) { tag in
-                HStack {
-                    Toggle(tag, isOn: Binding(get: { tags.isOn(tag) }, set: { tags.set(tag, $0) }))
-                        .toggleStyle(.checkbox)
-                    Spacer()
-                    Button { tags.remove(tag) } label: { Image(systemName: "minus.circle") }
-                        .buttonStyle(.borderless)
-                        .help("Delete this tag (recordings keep it)")
+        Form {
+            Section {
+                ForEach(tags.known, id: \.self) { tag in
+                    HStack {
+                        Toggle(tag, isOn: Binding(get: { tags.isOn(tag) }, set: { tags.set(tag, $0) }))
+                            .toggleStyle(.checkbox)
+                        Spacer()
+                        Button { tags.remove(tag) } label: { Image(systemName: "minus.circle") }
+                            .buttonStyle(.borderless)
+                            .help("Delete this tag (recordings keep it)")
+                    }
                 }
+                HStack {
+                    TextField("New tag", text: $tags.draft, prompt: Text("New tag, for example c001-fundamentals"))
+                        .labelsHidden()
+                        .onSubmit(add)
+                    Button("Add", action: add).disabled(Tags.clean(tags.draft).isEmpty)
+                }
+            } header: {
+                Text("Tags")
+            } footer: {
+                Text("What a recording is about. The ticked tags go into recording.json in the recording's "
+                    + "folder, and on the folder and its files as Finder tags. They stay ticked for the next "
+                    + "recording. A change during a recording goes into it at once.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
-            HStack {
-                TextField("New tag", text: $tags.draft, prompt: Text("New tag, for example c001-fundamentals"))
-                    .labelsHidden()
-                    .onSubmit(add)
-                Button("Add", action: add).disabled(Tags.clean(tags.draft).isEmpty)
-            }
-        } header: {
-            Text("Tags")
-        } footer: {
-            Text("What a recording is about. The ticked tags go into recording.json in the recording's "
-                + "folder, and on the folder and its files as Finder tags. They stay ticked for the next "
-                + "recording. A change during a recording goes into it at once.")
-                .font(.caption).foregroundStyle(.secondary)
         }
+        .formStyle(.grouped)
     }
 
     private func add() {

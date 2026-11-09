@@ -18,6 +18,10 @@ final class Tags: ObservableObject {
     }
     /// Settings' "new tag" field (no @State without Xcode's macros).
     @Published var draft = ""
+    /// The setup bar shows its own "new tag" field instead of the tag pop-up. A separate window
+    /// would go under the bar's cover, where no click reaches it.
+    @Published var adding = false
+    @Published var barDraft = ""
 
     private init() {
         let d = UserDefaults.standard
@@ -62,23 +66,6 @@ final class Tags: ObservableObject {
     /// One line, spaces collapsed: a Finder tag and a JSON string need nothing more.
     static func clean(_ name: String) -> String {
         name.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-    }
-
-    /// Asks for a new tag. The alert goes above the setup bar and its cover.
-    func askNew() {
-        let alert = NSAlert()
-        alert.messageText = "New Tag"
-        alert.informativeText = "A short name for what you record, for example a project: c001-fundamentals."
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        field.placeholderString = "Tag"
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Add")
-        alert.addButton(withTitle: "Cancel")
-        alert.layout()
-        alert.window.level = NSWindow.Level(rawValue: AreaPicker.level.rawValue + 2)
-        alert.window.initialFirstResponder = field
-        NSApp.activate()
-        if alert.runModal() == .alertFirstButtonReturn { add(field.stringValue) }
     }
 }
 

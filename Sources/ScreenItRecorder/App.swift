@@ -36,12 +36,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in Playback.shared.restart() }
         }
 
-        // `--settings [recording|colour|shortcuts|permissions]`, `--about`, `--playback`,
+        // `--settings [recording|sound|tags|colour|shortcuts|permissions]`, `--about`, `--playback`,
         // `--select-area`, `--setup` (the setup bar): open that window.
         let launch = CommandLine.arguments
         if let i = launch.firstIndex(of: "--settings") {
             let tabs: [String: SettingsWindow.Tab] = [
-                "recording": .recording, "sound": .sound, "colour": .colour, "shortcuts": .shortcuts, "permissions": .permissions,
+                "recording": .recording, "sound": .sound, "tags": .tags, "colour": .colour, "shortcuts": .shortcuts, "permissions": .permissions,
             ]
             let tab = i + 1 < launch.count ? tabs[launch[i + 1]] : nil
             MainActor.assumeIsolated { SettingsWindow.show(tab) }
@@ -49,6 +49,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if launch.contains("--about") { MainActor.assumeIsolated { About.show() } }
         if launch.contains("--select-area") { MainActor.assumeIsolated { AreaPicker.show() } }
         if launch.contains("--setup") { MainActor.assumeIsolated { AreaPicker.show(.setup) } }
+        // `--setup --new-tag`: the setup bar with its "new tag" field open (a visual check).
+        if launch.contains("--new-tag") {
+            MainActor.assumeIsolated {
+                Tags.shared.adding = true
+                SetupBar.focus()
+            }
+        }
         if CommandLine.arguments.contains("--playback") { MainActor.assumeIsolated { PlaybackPanel.show() } }
 
         // `--test <seconds> [--green] [--clicks]`: record (optionally over green, with a click ripple
@@ -159,14 +166,14 @@ struct AreaMenu: View {
 /// A tick box per tag, and New Tag…: the setup bar and the menu bar menu.
 struct TagItems: View {
     @ObservedObject private var tags = Tags.shared
+    let newTag: () -> Void
 
     var body: some View {
         ForEach(tags.known, id: \.self) { tag in
             Toggle(tag, isOn: Binding(get: { tags.isOn(tag) }, set: { tags.set(tag, $0) }))
         }
         if !tags.known.isEmpty { Divider() }
-        // After the menu closes: a modal alert inside a menu's action blocks its tracking.
-        Button("New Tag…") { DispatchQueue.main.async { tags.askNew() } }
+        Button("New Tag…", action: newTag)
     }
 }
 
@@ -186,7 +193,7 @@ struct MenuView: View {
         }
         AreaMenu().disabled(rec.isRecording)
         // Also during a recording: a change goes into its recording.json at once.
-        Menu("Tags: \(tags.summary)") { TagItems() }
+        Menu("Tags: \(tags.summary)") { TagItems { SettingsWindow.show(.tags) } }
         Button(green.isOn ? "\(green.shade.family) Screen Off (⌃⌥G / Esc)" : "\(green.shade.family) Screen On (⌃⌥G)") {
             green.toggle()
         }

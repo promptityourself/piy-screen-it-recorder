@@ -35,8 +35,9 @@ microphone to a file of its own. Drop the files into Final Cut Pro and sync them
   All audio files start together, at the first frame of the screens, and run to the stop.
   ScreenCaptureKit gives the sound only of an app that has a window (it may be hidden).
 - **Tags** say what a recording is about, for example `c001-fundamentals`. Tick them in the setup
-  bar's tag pop-up, the menu's **Tags** submenu (also during a recording) or Settings → Recording,
-  where you also add and delete them. They stay ticked for the next recording.
+  bar's tag pop-up (its **New Tag…** opens a field in the bar), the menu's **Tags** submenu (also
+  during a recording) or Settings → Tags, where you also add and delete them. They stay ticked for
+  the next recording.
 - **`recording.json`** in every recording folder, with or without tags: the tags, the start and end
   time, the duration, the countdown, the app and macOS versions, and each file with what it holds
   (the display, its pixel size and area; the mic; the app; the camera). It is written at the start,

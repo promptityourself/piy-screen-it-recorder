@@ -33,6 +33,13 @@ enum SetupBar {
     static func hide() {
         panel?.orderOut(nil)
         panel = nil
+        Tags.shared.adding = false
+    }
+
+    /// Typing goes to the bar: our app active, the bar the key window.
+    static func focus() {
+        NSApp.activate()
+        panel?.makeKeyAndOrderFront(nil)
     }
 
     /// The bar grows or shrinks with its contents (a display name, the Selected area segment).
@@ -43,6 +50,33 @@ enum SetupBar {
         let f = panel.frame
         panel.setFrame(NSRect(x: (f.midX - size.width / 2).rounded(), y: f.minY, width: size.width, height: size.height),
                        display: true)
+    }
+}
+
+/// The setup bar's "new tag" field: Enter adds the tag and ticks it, Esc cancels.
+private struct NewTagField: View {
+    @ObservedObject private var tags = Tags.shared
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "tag").foregroundStyle(.secondary)
+            TextField("New tag", text: $tags.barDraft, prompt: Text("New tag"))
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 180)
+                .focused($focused)
+                .onSubmit(add)
+                .onExitCommand { tags.adding = false }
+            Button("Add", action: add).disabled(Tags.clean(tags.barDraft).isEmpty)
+            Button { tags.adding = false } label: { Image(systemName: "xmark") }
+                .buttonStyle(.borderless)
+                .help("Cancel (Esc)")
+        }
+        .onAppear { DispatchQueue.main.async { focused = true } }
+    }
+
+    private func add() {
+        if tags.add(tags.barDraft) { tags.adding = false }
     }
 }
 
@@ -66,7 +100,7 @@ private struct SetupBarView: View {
                     Image(systemName: "xmark.circle.fill").font(.system(size: 20)).foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-                .keyboardShortcut(.cancelAction)
+                .keyboardShortcut(tags.adding ? nil : .cancelAction)  // Esc in the tag field cancels only that
                 .help("Close (Esc)")
 
                 separator
@@ -101,17 +135,24 @@ private struct SetupBarView: View {
                 .controlSize(.large)
                 .fixedSize()
                 .tint(Color(nsColor: ClickHighlight.red))
-                .keyboardShortcut(.defaultAction)
+                .keyboardShortcut(tags.adding ? nil : .defaultAction)  // Enter in the tag field adds the tag
                 .help("Start recording (Enter or ⌃⌥⇧R)")
             }
             Divider().opacity(0.5)
             // How: one pop-up per option.
             HStack(spacing: 8) {
-                chip(tags.active.isEmpty ? "tag.slash" : "tag", tags.summary,
-                     help: "Tags: what the recording is about, saved in recording.json") {
-                    TagItems()
-                    Divider()
-                    Button("Edit Tags…") { open(.recording) }
+                if tags.adding {
+                    NewTagField()
+                } else {
+                    chip(tags.active.isEmpty ? "tag.slash" : "tag", tags.summary,
+                         help: "Tags: what the recording is about, saved in recording.json") {
+                        TagItems {
+                            tags.barDraft = ""
+                            tags.adding = true
+                            SetupBar.focus()
+                        }
+                        Button("Edit Tags…") { open(.tags) }
+                    }
                 }
 
                 chip(rec.micID == nil ? "mic.slash" : "mic", micName, help: "Microphone: records to mic.wav") {
