@@ -4,13 +4,13 @@
   renaming costs something: bundle id + executable (TCC grants are keyed on them), the Swift
   target, and `~/Movies/ScreenItRecorder` (existing recordings live there).
 
-- **`promptityourself/piy-screen-it-recorder`** (moved from `mergodon`, 2026-10-11). **Public repo (MIT).** Everything committed is published. No fleet hosts, IPs, or personal paths in code or docs.
-- **Exception to the observer rule (mate, 2026-10-11):** this Mac app is built and tested ON the
+- **`promptityourself/piy-screen-it-recorder`** (moved from `mergodon`). **Public repo (MIT).** Everything committed is published. No fleet hosts, IPs, or personal paths in code or docs.
+- **Exception to the observer rule (mate):** this Mac app is built and tested ON the
   observer Mac — a macOS app cannot build on the Linux dev boxes.
 - Build + install: `./build.sh --install` (SwiftPM + Command Line Tools, no Xcode → no SwiftUI
   macros: no `@State`/`@Observable`, use `ObservableObject`). Signs with the local
   "ScreenItRecorder Local Signing" identity so TCC grants survive rebuilds — never fall back to
-  ad hoc on mate's Mac: that silently revoked his Screen Recording grant mid-session (2026-10-11). Verify: `"build/Screen It Recorder.app/Contents/MacOS/ScreenItRecorder" --test <s>`
+  ad hoc: that revokes the Screen Recording grant. Verify: `"build/Screen It Recorder.app/Contents/MacOS/ScreenItRecorder" --test <s>`
   then `ffprobe` the files in the save folder (`defaults read com.mergodon.ScreenItRecorder saveFolder`; unset = `~/Movies/ScreenItRecorder/`). Delete test recordings after — they contain screen content.
 - Run the `--test` binary from the terminal: TCC then uses the terminal's Screen Recording + Mic grant.
 - `rec` / `widgets` are the ffmpeg CLI fallback; keep the folder and file names in step with the app. They have no quality, camera or click options; do not add them unless mate asks.
@@ -21,6 +21,8 @@
   `--install` (it quits the app) or run any on-screen check (`--test`, `--setup`, `--settings`) while
   he records or his colour screen is up: list the app's windows first — layer 1002 = recording
   overlay, layer 1000 = colour screen. A test window shows up in his recording.
+- Each recording folder has a `recording.json` (`RecordingInfo` in `Tags.swift`, `"format": 1`).
+  A breaking change to it or to the file layout bumps `format`.
 
 ## Cross-repo
 
@@ -28,8 +30,5 @@ Never edit these from here; file issues with `gh issue create -R <owner/repo>`.
 
 - **`mergodon/promptityourself-web`** — the PIY site; owns this project's page. No page for this
   app is live: `/projects/` redirects to `/products/`, and `/products/screen-it-recorder/` is 404.
-- **`mergodon/piy-cut-it-bro`** — reads each folder's `recording.json` (`RecordingInfo` in
-  `Tags.swift`, `"format": 1`) and the file layout. A breaking change bumps `format` and gets an
-  issue there (layout: piy-cut-it-bro#1).
-- **Distribution: App Store later (mate, 2026-10-11)** — no Developer ID / notarised download, and the
+- **Distribution: App Store later (mate)** — no Developer ID / notarised download, and the
   site page says nothing about dev builds or signing. Blockers are tracked in this repo's issues.
