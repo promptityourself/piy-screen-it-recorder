@@ -4,8 +4,8 @@
   renaming costs something: bundle id + executable (TCC grants are keyed on them), the Swift
   target, and `~/Movies/ScreenItRecorder` (existing recordings live there).
 
-- **`promptityourself/piy-screen-it-recorder`** (moved from `mergodon`). **Public repo (MIT).** Everything committed is published. No fleet hosts, IPs, or personal paths in code or docs.
-- **Exception to the observer rule (mate):** this Mac app is built and tested ON the
+- **`promptityourself/piy-screen-it-recorder`** **Public repo (MIT).** Everything committed is published. No fleet hosts, IPs, or personal paths in code or docs.
+- **Exception to the observer rule:** this Mac app is built and tested ON the
   observer Mac — a macOS app cannot build on the Linux dev boxes.
 - Build + install: `./build.sh --install` (SwiftPM + Command Line Tools, no Xcode → no SwiftUI
   macros: no `@State`/`@Observable`, use `ObservableObject`). Signs with the local
@@ -19,8 +19,8 @@
   `defaults import <domain> <snap>` after, then delete each key not in the snapshot (`import`
   merges). Never restore a key by hand from an earlier value. Never
   `--install` (it quits the app) or run any on-screen check (`--test`, `--setup`, `--settings`) while
-  he records or his colour screen is up: list the app's windows first — layer 1002 = recording
-  overlay, layer 1000 = colour screen. A test window shows up in his recording.
+  he records, plays back or his colour screen is up: list the app's windows first — layer 1002 = recording
+  overlay, layer 1000 = colour screen or Playback. A test window shows up in his recording.
 - Each recording folder has a `recording.json` (`RecordingInfo` in `Tags.swift`, `"format": 1`).
   A breaking change to it or to the file layout bumps `format`.
 
@@ -30,5 +30,5 @@ Never edit these from here; file issues with `gh issue create -R <owner/repo>`.
 
 - **`mergodon/promptityourself-web`** — the PIY site; owns this project's page. No page for this
   app is live: `/projects/` redirects to `/products/`, and `/products/screen-it-recorder/` is 404.
-- **Distribution: App Store later (mate)** — no Developer ID / notarised download, and the
+- **Distribution: App Store later** — no Developer ID / notarised download, and the
   site page says nothing about dev builds or signing. Blockers are tracked in this repo's issues.
